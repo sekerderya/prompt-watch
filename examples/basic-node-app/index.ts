@@ -7,7 +7,7 @@ loadEnv({ path: path.resolve(process.cwd(), "../../.env") });
 
 const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) {
-  console.error("OPENAI_API_KEY bulunamadı, .env dosyanızı kontrol edin");
+  console.error("OPENAI_API_KEY not found, check your .env file");
   process.exit(1);
 }
 
@@ -30,7 +30,7 @@ const client = wrapOpenAI(new OpenAI({ apiKey }), {
   getDistinctId: () => userIds[userIndex % userIds.length],
 });
 
-const questions = ["Merhaba! Bu proje nedir?", "Bir satırla ne yapar?", "Teşekkürler!"];
+const questions = ["Hello! What is this project?", "What does it do in one line?", "Thanks!"];
 
 for (let i = 0; i < questions.length; i++) {
   const distinctId = userIds[userIndex % userIds.length];
@@ -43,13 +43,13 @@ for (let i = 0; i < questions.length; i++) {
         { role: "user", content: `${questions[i]} (distinctId: ${distinctId})` },
       ],
     });
-    console.log(`Cevap ${i + 1} [${distinctId}]:`, res.choices[0]?.message.content);
+    console.log(`Answer ${i + 1} [${distinctId}]:`, res.choices[0]?.message.content);
   } catch (err) {
-    console.error(`Çağrı ${i + 1} başarısız:`, (err as Error)?.message ?? err);
+    console.error(`Call ${i + 1} failed:`, (err as Error)?.message ?? err);
   }
 }
 
 await telemetry.flush();
 cache.stop();
-console.log("Script tamamlandı, telemetry flush edildi.");
+console.log("Script finished, telemetry flushed.");
 process.exit(0);

@@ -1,18 +1,18 @@
 # Dependencies
 node_modules/
 
-# Ortam degiskenleri — GERCEK SIRLAR, ASLA COMMIT EDILMEZ
+# Environment variables — REAL SECRETS, NEVER COMMIT
 .env
 .env.local
 .env.development.local
 .env.production.local
 .env.test.local
 
-# Next.js build ciktimasi
+# Next.js build output
 .next/
 out/
 
-# SDK / diger paket build ciktilari
+# SDK / other package build outputs
 dist/
 build/
 
@@ -22,19 +22,19 @@ build/
 # Test coverage
 coverage/
 
-# Loglar
+# Logs
 *.log
 npm-debug.log*
 
-# Isletim sistemi / IDE
+# Operating system / IDE
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 
-# Vercel (ileride deploy edilirse)
+# Vercel (if deployed later)
 .vercel
 
-# Postgres verisi
+# Postgres data
 pgdata/
 postgres-data/

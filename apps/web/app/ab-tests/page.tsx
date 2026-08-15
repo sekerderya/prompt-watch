@@ -122,7 +122,7 @@ export default function ABTestsPage() {
   async function createTest() {
     setFormMsg(null);
     if (!name.trim() || !promptName.trim() || variantAId === null || variantBId === null) {
-      setFormMsg("Tüm alanları doldurun");
+      setFormMsg("Please fill in all fields");
       return;
     }
     try {
@@ -133,10 +133,10 @@ export default function ABTestsPage() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setFormMsg(body.error ?? "Oluşturulamadı");
+        setFormMsg(body.error ?? "Could not create test");
         return;
       }
-      setFormMsg("Test oluşturuldu");
+      setFormMsg("Test created");
       setName("");
       setPromptName("");
       setVersions([]);
@@ -144,18 +144,18 @@ export default function ABTestsPage() {
       setVariantBId(null);
       void loadTests();
     } catch {
-      setFormMsg("Oluşturulamadı");
+      setFormMsg("Could not create test");
     }
   }
 
   return (
     <main style={pageStyle}>
-      <h1>A/B Test Karşılaştırma</h1>
+      <h1>A/B Test Comparison</h1>
 
       <section>
-        <h2>Test Listesi</h2>
+        <h2>Test List</h2>
         {tests.length === 0 ? (
-          <p>Henüz test yok</p>
+          <p>No tests yet</p>
         ) : (
           <select
             value={selectedId ?? ""}
@@ -178,36 +178,36 @@ export default function ABTestsPage() {
             Prompt: {selected.promptName} · Split: %{selected.splitPercent}
           </p>
           {metricsLoading ? (
-            <p>Yükleniyor...</p>
+            <p>Loading...</p>
           ) : metrics.length === 0 ? (
-            <p>Henüz veri yok</p>
+            <p>No data yet</p>
           ) : (
             <table border={1} cellPadding={8} style={{ borderCollapse: "collapse" }}>
               <thead>
                 <tr>
-                  <th>Metrik</th>
+                  <th>Metric</th>
                   <th>A: {(selected.variantA?.promptText ?? "").slice(0, 60)}</th>
                   <th>B: {(selected.variantB?.promptText ?? "").slice(0, 60)}</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Ort. Gecikme (ms)</td>
+                  <td>Avg. Latency (ms)</td>
                   <td>{fmt(metricsA?.avgLatency, 0)}</td>
                   <td>{fmt(metricsB?.avgLatency, 0)}</td>
                 </tr>
                 <tr>
-                  <td>Ort. Maliyet (USD)</td>
+                  <td>Avg. Cost (USD)</td>
                   <td>{fmt(metricsA?.avgCost)}</td>
                   <td>{fmt(metricsB?.avgCost)}</td>
                 </tr>
                 <tr>
-                  <td>Hata Oranı (%)</td>
+                  <td>Error Rate (%)</td>
                   <td>{rate(metricsA)}</td>
                   <td>{rate(metricsB)}</td>
                 </tr>
                 <tr>
-                  <td>İstek Sayısı</td>
+                  <td>Request Count</td>
                   <td>{metricsA?.total ?? 0}</td>
                   <td>{metricsB?.total ?? 0}</td>
                 </tr>
@@ -218,18 +218,18 @@ export default function ABTestsPage() {
       )}
 
       <section>
-        <h2>Yeni A/B Testi Oluştur</h2>
+        <h2>Create New A/B Test</h2>
         <div style={formStyle}>
           <label>
-            Test Adı
+            Test Name
             <input value={name} onChange={(e) => setName(e.target.value)} />
           </label>
           <label>
-            Prompt Adı
+            Prompt Name
             <input
               value={promptName}
               onChange={(e) => setPromptName(e.target.value)}
-              placeholder="örn. support-bot"
+              placeholder="e.g. support-bot"
             />
           </label>
           {versions.length > 0 && (
@@ -272,7 +272,7 @@ export default function ABTestsPage() {
               onChange={(e) => setSplitPercent(Number(e.target.value))}
             />
           </label>
-          <button onClick={createTest}>Oluştur</button>
+          <button onClick={createTest}>Create</button>
           {formMsg && <p>{formMsg}</p>}
         </div>
       </section>

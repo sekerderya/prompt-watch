@@ -59,9 +59,9 @@ export default function Home() {
     };
   }, []);
 
-  if (loading) return <main style={{ padding: 24 }}>Yükleniyor...</main>;
-  if (failed) return <main style={{ padding: 24 }}>Veri yüklenemedi</main>;
-  if (!rows.length) return <main style={{ padding: 24 }}>Henüz veri yok</main>;
+  if (loading) return <main style={{ padding: 24 }}>Loading...</main>;
+  if (failed) return <main style={{ padding: 24 }}>Failed to load data</main>;
+  if (!rows.length) return <main style={{ padding: 24 }}>No data yet</main>;
 
   const chartRows: ChartRow[] = rows.map((r) => ({
     day: r.day,
@@ -73,25 +73,25 @@ export default function Home() {
     <main style={{ padding: 24 }}>
       <h1>PromptWatch</h1>
 
-      <h2>Günlük Maliyet (USD)</h2>
+      <h2>Daily Cost (USD)</h2>
       <ResponsiveContainer width="100%" height={300}>
         <BarChart data={chartRows}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="day" />
           <YAxis />
           <Tooltip />
-          <Bar dataKey="totalCost" fill="#8884d8" name="Maliyet (USD)" />
+          <Bar dataKey="totalCost" fill="#8884d8" name="Cost (USD)" />
         </BarChart>
       </ResponsiveContainer>
 
-      <h2>Günlük Hata Oranı (%)</h2>
+      <h2>Daily Error Rate (%)</h2>
       <ResponsiveContainer width="100%" height={300}>
         <LineChart data={chartRows}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="day" />
           <YAxis />
           <Tooltip />
-          <Line type="monotone" dataKey="errorRate" stroke="#ff7300" name="Hata Oranı (%)" />
+          <Line type="monotone" dataKey="errorRate" stroke="#ff7300" name="Error Rate (%)" />
         </LineChart>
       </ResponsiveContainer>
     </main>
