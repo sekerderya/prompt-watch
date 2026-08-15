@@ -1,0 +1,62 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Prompt {
+  id         Int      @id @default(autoincrement())
+  name       String
+  version    Int
+  promptText String   @map("prompt_text")
+  promptHash String   @map("prompt_hash")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  abTestsAsA ABTest[] @relation("VariantA")
+  abTestsAsB ABTest[] @relation("VariantB")
+  traces     Trace[]
+
+  @@unique([name, promptHash])
+  @@unique([name, version])
+  @@index([name])
+  @@map("prompts")
+}
+
+model ABTest {
+  id           Int      @id @default(autoincrement())
+  name         String
+  promptName   String   @map("prompt_name")
+  variantA     Prompt   @relation("VariantA", fields: [variantAId], references: [id])
+  variantAId   Int      @map("variant_a_id")
+  variantB     Prompt   @relation("VariantB", fields: [variantBId], references: [id])
+  variantBId   Int      @map("variant_b_id")
+  splitPercent Int      @default(50) @map("split_percent")
+  status       String   @default("ACTIVE")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  traces Trace[]
+
+  @@map("ab_tests")
+}
+
+model Trace {
+  id               Int      @id @default(autoincrement())
+  prompt           Prompt   @relation(fields: [promptId], references: [id])
+  promptId         Int      @map("prompt_id")
+  abTest           ABTest?  @relation(fields: [abTestId], references: [id])
+  abTestId         Int?     @map("ab_test_id")
+  variant          String?
+  latencyMs        Int      @map("latency_ms")
+  promptTokens     Int      @map("prompt_tokens")
+  completionTokens Int      @map("completion_tokens")
+  costUsd          Float    @map("cost_usd")
+  status           String
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([promptId, createdAt])
+  @@index([abTestId])
+  @@map("traces")
+}

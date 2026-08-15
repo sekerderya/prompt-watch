@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Ortam degiskenleri — GERCEK SIRLAR, ASLA COMMIT EDILMEZ
+.env
+.env.local
+.env.development.local
+.env.production.local
+.env.test.local
+
+# Next.js build ciktimasi
+.next/
+out/
+
+# SDK / diger paket build ciktilari
+dist/
+build/
+
+# TypeScript
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+
+# Loglar
+*.log
+npm-debug.log*
+
+# Isletim sistemi / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Vercel (ileride deploy edilirse)
+.vercel
+
+# Postgres verisi
+pgdata/
+postgres-data/
