@@ -1,70 +1,51 @@
 # PromptWatch
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue.svg)](https://www.typescriptlang.org/)
+[![Next.js](https://img.shields.io/badge/Next.js-14-black.svg)](https://nextjs.org/)
+[![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED.svg)](https://www.docker.com/)
 
-Prompt'ları izlemek, A/B test edip maliyet / hata oranı metrikleri toplamak için hafif bir araç.
-OpenAI çağrılarını saran bir **SDK**, prompt versiyonlarını, A/B testlerini ve traces'ı saklayan bir
-**Backend (Next.js + Prisma + Postgres)** ve bu metrikleri görselleştiren bir **Dashboard**'dan oluşur.
+> Open-source, privacy-first, non-blocking LLM prompt versioning, A/B testing & telemetry observability engine.
 
-## Mimari: SDK → Backend → Dashboard
+PromptWatch is an open-source observability and prompt engineering platform designed to seamlessly wrap existing LLM clients. It provides automated prompt versioning via cryptographic SHA-256 hashing, deterministic user-level A/B testing, and real-time latency and token cost telemetry with zero blocking impact on your application's hot path.
 
-1. **SDK** (`packages/sdk`): `chat.completions.create`'i sarar. System prompt'un SHA-256'sını hesaplar ve
-   `POST /api/prompts/resolve` ile prompt versiyonunu çözer (paralel başlatılır, OpenAI çağrısı gecikmez).
-   Trace, `POST /api/traces` ile fire-and-forget gönderilir. Aktif bir A/B testi varsa system prompt
-   varyant metniyle değiştirilir ve trace `abTestId`/`variant` ile işaretlenir.
-2. **Backend** (`apps/web`): `prompts`, `ab_tests`, `traces` tablolarını tutar; resolve, traces, ab-tests
-   ve metrik endpoint'lerini sunar.
-3. **Dashboard**: `/` günlük maliyet ve hata oranı grafikleri, `/ab-tests` A/B karşılaştırma ve test oluşturma.
+---
 
-## Kurulum
+## Architecture & Interception Flow
 
-```bash
-cp .env.example .env   # OPENAI_API_KEY'i doldur
-docker compose up -d --build
-```
+PromptWatch operates via a lightweight SDK wrapper (`@promptwatch/sdk`) sitting between your application code and the OpenAI API. Telemetry transport and active test configurations execute completely out-of-band to ensure strictly isolated execution.
 
-Migration ve seed (istendiğinde):
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Client App / User
+    participant SDK as @promptwatch/sdk
+    participant Cache as In-Memory ABCache
+    participant Backend as PromptWatch API
+    participant DB as PostgreSQL
+    participant LLM as OpenAI Provider
 
-```bash
-docker compose exec web npx prisma migrate deploy
-docker compose exec web npx prisma db seed
-```
+    Note over SDK, Backend: Background Sync (Every N Seconds)
+    loop Active Test Polling
+        Cache->>Backend: GET /api/ab-tests/active
+        Backend->>DB: Query Active A/B Configurations
+        DB-->>Backend: Return Active Tests
+        Backend-->>Cache: Sync Local Variant Map
+    end
 
-Dashboard: http://localhost:3000
+    Note over User, LLM: Request Execution Phase
+    User->>SDK: wrapOpenAI().chat.completions.create(...)
+    SDK->>Cache: assignVariant(promptName, distinctId)
+    Cache-->>SDK: Return Variant (Prompt A or Prompt B)
+    
+    SDK->>Backend: POST /api/prompts/resolve (SHA-256 Hash Check)
+    Backend->>DB: Upsert Prompt Version (Auto-increment vN)
+    
+    SDK->>LLM: Forward Intercepted Payload
+    LLM-->>SDK: Return Completion Stream / Response
+    SDK-->>User: Return Response to Host Application
 
-## SDK Kullanımı
-
-```ts
-import OpenAI from "openai";
-import { wrapOpenAI } from "@promptwatch/sdk";
-
-const client = wrapOpenAI(new OpenAI({ apiKey: process.env.OPENAI_API_KEY! }), {
-  promptName: "support-bot",
-  backendUrl: process.env.PROMPTWATCH_BACKEND_URL ?? "http://localhost:3000",
-  getDistinctId: () => currentUserIdFromRequestContext(), // A/B bucketing için her çağrıda taze
-});
-```
-
-### Serverless / Edge NOT
-
-Telemetry fire-and-forget gönderilir; serverless ortamda process istekten sonra dondurulabileceği için
-yanıt dönülmeden önce pending traces'ları boşalt:
-
-```ts
-import { TelemetryClient } from "@promptwatch/sdk";
-
-const telemetry = new TelemetryClient(BACKEND_URL);
-wrapOpenAI(openai, { promptName, backendUrl: BACKEND_URL, telemetry });
-
-// handler sonunda:
-await telemetry.flush();
-```
-
-ya da platformun `waitUntil` API'sini kullanın.
-
-## Örnek
-
-`examples/basic-node-app` — gerçek OpenAI çağrısı yapan minimal script:
-
-```bash
-OPENAI_API_KEY'ini .env'e doldur
-npm run start --workspace=examples/basic-node-app
-```
+    Note over SDK, DB: Async Non-Blocking Telemetry
+    par Fire-and-Forget
+        SDK--)Backend: POST /api/traces (Status, Tokens, Cost, Latency)
+        Backend--)DB: Persist Telemetry Trace
+    end

@@ -1,4 +1,7 @@
 {
   "private": true,
-  "workspaces": ["apps/*", "packages/*", "examples/*"]
+  "workspaces": ["apps/*", "packages/*", "examples/*"],
+  "scripts": {
+    "demo": "tsx examples/demo.ts"
+  }
 }
