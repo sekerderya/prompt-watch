@@ -30,6 +30,10 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+      # Isolate Next.js build output so a host-side `npm run build` (production .next)
+      # never collides with the dev server's own .next inside the container.
+      - web_next:/app/apps/web/.next
 
 volumes:
   pgdata:
+  web_next:
