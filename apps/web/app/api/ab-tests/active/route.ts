@@ -1,13 +1,25 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 const prisma = globalForPrisma.prisma ?? new PrismaClient();
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
+type ActiveTestPayload = Prisma.ABTestGetPayload<{
+  select: {
+    id: true;
+    promptName: true;
+    variantAId: true;
+    variantBId: true;
+    splitPercent: true;
+    variantA: { select: { promptText: true } };
+    variantB: { select: { promptText: true } };
+  };
+}>;
+
 export async function GET() {
   try {
-    const tests = await prisma.aBTest.findMany({
+    const tests: ActiveTestPayload[] = await prisma.aBTest.findMany({
       where: { status: "ACTIVE" },
       select: {
         id: true,
@@ -24,7 +36,7 @@ export async function GET() {
       },
     });
 
-    const result = tests.map((t) => ({
+    const result = tests.map((t: ActiveTestPayload) => ({
       id: t.id,
       promptName: t.promptName,
       variantAId: t.variantAId,
