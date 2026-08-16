@@ -131,11 +131,20 @@ flowchart TB
 git clone https://github.com/sekerderya/prompt-watch.git
 cd prompt-watch
 npm install
-npm run build --workspace=packages/sdk
-docker compose up -d
+cp .env.example .env   # optional: set OPENAI_API_KEY to use real OpenAI calls
+docker compose up -d   # starts PostgreSQL and the Next.js backend
+docker compose exec web npx prisma db push --schema=./prisma/schema.prisma   # create/update DB schema
 npm run demo
 ```
 
 Then open **http://localhost:3000** — the dashboard updates in real time as the demo runs.
 
-By default the demo runs against a deterministic mock client, so no API key is required. To see it run against real OpenAI calls, add `OPENAI_API_KEY` to a `.env` file at the repo root (copy `.env.example` as a starting point) before running `npm run demo`.
+### Step-by-step
+
+1. **Install dependencies** — `npm install` resolves the monorepo workspaces (`apps/*`, `packages/*`, `examples/*`).
+2. **Copy the environment template** — `cp .env.example .env` creates the local env file at the repo root. Leave `OPENAI_API_KEY` empty to run the demo in mock mode, or fill it in to use real OpenAI calls.
+3. **Start the stack** — `docker compose up -d` launches PostgreSQL and the backend (`apps/web`). The container automatically applies any pending prisma migrations on startup before starting the dev server.
+4. **Apply the schema** — `docker compose exec web npx prisma db push --schema=./prisma/schema.prisma` creates or updates the database tables to match `apps/web/prisma/schema.prisma` (idempotent; safe to re-run).
+5. **Run the demo** — `npm run demo` drives the full flow end-to-end: automatic prompt versioning, A/B test creation, and sticky per-user bucketing, then streams telemetry to the dashboard.
+
+By default the demo runs against a deterministic mock client, so no API key is required. To see it run against real OpenAI calls, set `OPENAI_API_KEY` in `.env` before running `npm run demo`.
