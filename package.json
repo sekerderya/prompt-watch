@@ -1,7 +1,9 @@
 {
   "private": true,
+  "license": "MIT",
   "workspaces": ["apps/*", "packages/*", "examples/*"],
   "scripts": {
+    "build": "npm run build --workspace=packages/sdk && npm run build --workspace=apps/web",
     "demo": "tsx examples/demo.ts"
   }
 }

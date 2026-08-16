@@ -3,6 +3,7 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY package.json ./
+COPY package-lock.json ./
 COPY apps/web/package.json ./apps/web/
 COPY packages/sdk/package.json ./packages/sdk/
 
@@ -12,4 +13,4 @@ COPY . .
 
 WORKDIR /app/apps/web
 
-CMD ["npm", "run", "dev"]
+CMD ["sh", "-c", "npx prisma migrate deploy --schema=./prisma/schema.prisma && npm run dev"]
