@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { VariantBadge, StatusBadge } from "../components/Badge";
+import EmptyState from "../components/EmptyState";
 
 interface ABTest {
   id: number;
@@ -30,8 +32,19 @@ interface VariantMetrics {
   errors: number;
 }
 
-const pageStyle: React.CSSProperties = { padding: 24, fontFamily: "system-ui, sans-serif" };
-const formStyle: React.CSSProperties = { display: "grid", gap: 8, maxWidth: 420 };
+const lowerIsBetter: Record<string, (a: VariantMetrics | undefined, b: VariantMetrics | undefined) => boolean> = {
+  latency: (a, b) => (a?.avgLatency ?? Infinity) <= (b?.avgLatency ?? Infinity),
+  cost: (a, b) => (a?.avgCost ?? Infinity) <= (b?.avgCost ?? Infinity),
+  errors: (a, b) => errorRate(a) <= errorRate(b),
+};
+
+function fmt(v: number | null | undefined, digits = 2): string {
+  return v == null || Number.isNaN(v) ? "-" : v.toFixed(digits);
+}
+
+function errorRate(m: VariantMetrics | undefined): number {
+  return m && m.total > 0 ? (m.errors / m.total) * 100 : 0;
+}
 
 export default function ABTestsPage() {
   const [tests, setTests] = useState<ABTest[]>([]);
@@ -46,7 +59,9 @@ export default function ABTestsPage() {
   const [variantAId, setVariantAId] = useState<number | null>(null);
   const [variantBId, setVariantBId] = useState<number | null>(null);
   const [splitPercent, setSplitPercent] = useState(50);
-  const [formMsg, setFormMsg] = useState<string | null>(null);
+  const [formMsg, setFormMsg] = useState<{ kind: "error" | "success"; text: string } | null>(
+    null
+  );
 
   const loadTests = useCallback(async () => {
     try {
@@ -116,24 +131,17 @@ export default function ABTestsPage() {
   const metricsA = metrics.find((m) => m.variant === "A");
   const metricsB = metrics.find((m) => m.variant === "B");
 
-  function fmt(v: number | null | undefined, digits = 2): string {
-    return v == null || Number.isNaN(v) ? "-" : v.toFixed(digits);
-  }
-
-  function rate(m: VariantMetrics | undefined): string {
-    return m && m.total > 0 ? ((m.errors / m.total) * 100).toFixed(1) : "0.0";
-  }
-
   async function createTest() {
     setFormMsg(null);
     if (!name.trim() || !promptName.trim()) {
-      setFormMsg("Please fill in all fields");
+      setFormMsg({ kind: "error", text: "Please fill in all fields" });
       return;
     }
     if (variantAId === null || variantBId === null) {
-      setFormMsg(
-        `No prompt versions found for "${promptName.trim()}". Create or run a demo for that prompt first (e.g. via npm run demo), and check the exact name.`
-      );
+      setFormMsg({
+        kind: "error",
+        text: `No prompt versions found for "${promptName.trim()}". Create the prompt first (e.g. via npm run demo) and check the exact name.`,
+      });
       return;
     }
     try {
@@ -144,10 +152,10 @@ export default function ABTestsPage() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setFormMsg(body.error ?? "Could not create test");
+        setFormMsg({ kind: "error", text: body.error ?? "Could not create test" });
         return;
       }
-      setFormMsg("Test created");
+      setFormMsg({ kind: "success", text: "Test created" });
       setName("");
       setPromptName("");
       setVersions([]);
@@ -155,99 +163,212 @@ export default function ABTestsPage() {
       setVariantBId(null);
       void loadTests();
     } catch {
-      setFormMsg("Could not create test");
+      setFormMsg({ kind: "error", text: "Could not create test" });
     }
   }
 
+  function WinnerCell({
+    a,
+    b,
+    winA,
+    valueA,
+    valueB,
+  }: {
+    a: VariantMetrics | undefined;
+    b: VariantMetrics | undefined;
+    winA: boolean;
+    valueA: string;
+    valueB: string;
+  }) {
+    return (
+      <>
+        <td className="pw-variant-head">
+          <span className={`pw-value ${winA ? "pw-value--winner" : a ? "pw-value--loser" : ""}`}>
+            {valueA}
+          </span>
+            {winA ? <span className="pw-badge pw-badge--winner">winner</span> : null}
+        </td>
+        <td className="pw-variant-head">
+          <span className={`pw-value ${!winA ? "pw-value--winner" : b ? "pw-value--loser" : ""}`}>
+            {valueB}
+          </span>
+          {!winA ? <span className="pw-badge pw-badge--winner">winner</span> : null}
+        </td>
+      </>
+    );
+  }
+
   return (
-    <main style={pageStyle}>
-      <h1>A/B Test Comparison</h1>
-
-      <section>
-        <h2>Test List</h2>
-        {tests.length === 0 ? (
-          <p>No tests yet</p>
-        ) : (
-          <select
-            value={selectedId ?? ""}
-            onChange={(e) => setSelectedId(Number(e.target.value))}
-            style={{ minWidth: 300 }}
-          >
-            {tests.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} ({t.status}) - {new Date(t.createdAt).toLocaleDateString()}
-              </option>
-            ))}
-          </select>
-        )}
-      </section>
-
-      {selected && (
-        <section>
-          <h2>{selected.name}</h2>
-          <p>
-            Prompt: {selected.promptName} · Split: %{selected.splitPercent}
+    <>
+      <div className="pw-page-head">
+        <div>
+          <h1 className="pw-h1">A/B Tests</h1>
+          <p className="pw-page-head__desc">
+            Compare two prompt versions side by side. The winner of each metric is highlighted
+            automatically.
           </p>
-          {metricsLoading ? (
-            <p>Loading...</p>
-          ) : metrics.length === 0 ? (
-            <p>No data yet</p>
-          ) : (
-            <table border={1} cellPadding={8} style={{ borderCollapse: "collapse" }}>
-              <thead>
-                <tr>
-                  <th>Metric</th>
-                  <th>A: {(selected.variantA?.promptText ?? "").slice(0, 60)}</th>
-                  <th>B: {(selected.variantB?.promptText ?? "").slice(0, 60)}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>Avg. Latency (ms)</td>
-                  <td>{fmt(metricsA?.avgLatency, 0)}</td>
-                  <td>{fmt(metricsB?.avgLatency, 0)}</td>
-                </tr>
-                <tr>
-                  <td>Avg. Cost (USD)</td>
-                  <td>{fmt(metricsA?.avgCost)}</td>
-                  <td>{fmt(metricsB?.avgCost)}</td>
-                </tr>
-                <tr>
-                  <td>Error Rate (%)</td>
-                  <td>{rate(metricsA)}</td>
-                  <td>{rate(metricsB)}</td>
-                </tr>
-                <tr>
-                  <td>Request Count</td>
-                  <td>{metricsA?.total ?? 0}</td>
-                  <td>{metricsB?.total ?? 0}</td>
-                </tr>
-              </tbody>
-            </table>
-          )}
-        </section>
-      )}
+        </div>
+      </div>
 
-      <section>
-        <h2>Create New A/B Test</h2>
-        <div style={formStyle}>
-          <label>
-            Test Name
-            <input value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label>
-            Prompt Name
+      <div className="pw-card">
+        <div className="pw-card__head">
+          <h2 className="pw-h2">Tests</h2>
+        </div>
+        {tests.length === 0 ? (
+          <EmptyState
+            icon="⊙"
+            title="No tests yet"
+            body="Run the demo to generate an A/B test, or create one with the form below. Once prompts exist, pick the same prompt name you used."
+            action="npm run demo"
+          />
+        ) : (
+          <>
+            <div className="pw-list">
+              {tests.map((t) => (
+                <button
+                  key={t.id}
+                  className={`pw-list__item${selectedId === t.id ? " pw-list__item--active" : ""}`}
+                  onClick={() => setSelectedId(t.id)}
+                >
+                  <span className="pw-list__meta">
+                    <span className="pw-list__name">{t.name}</span>
+                    <span className="pw-list__date">
+                      {t.promptName} · split {t.splitPercent}%
+                    </span>
+                  </span>
+                  <StatusBadge status={t.status} />
+                </button>
+              ))}
+            </div>
+
+            {selected && (
+              <div style={{ marginTop: "var(--pw-space-5)" }}>
+                <div
+                  className="pw-card__head"
+                  style={{ marginBottom: "var(--pw-space-3)" }}
+                >
+                  <h2 className="pw-h2">{selected.name}</h2>
+                  <span className="pw-chip">
+                    {selected.promptName} · {selected.createdAt.slice(0, 10)}
+                  </span>
+                </div>
+
+                {metricsLoading ? (
+                  <div className="pw-loading">Loading comparison…</div>
+                ) : metrics.length === 0 ? (
+                  <EmptyState
+                    icon="⊙"
+                    title="No metrics yet"
+                    body="No requests have been bucketed to this test yet. Run the demo so the SDK sends traffic to both variants."
+                    action="npm run demo"
+                  />
+                ) : (
+                  <table className="pw-compare">
+                    <thead>
+                      <tr>
+                        <th>Metric</th>
+                        <th className="pw-variant-head pw-variant-head--a">
+                          <VariantBadge variant="a">
+                            A · v{selected.variantAId}
+                          </VariantBadge>
+                        </th>
+                        <th className="pw-variant-head pw-variant-head--b">
+                          <VariantBadge variant="b">
+                            B · v{selected.variantBId}
+                          </VariantBadge>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td className="pw-compare__metric">Avg. Latency</td>
+                        <WinnerCell
+                          a={metricsA}
+                          b={metricsB}
+                          winA={lowerIsBetter.latency(metricsA, metricsB)}
+                          valueA={`${fmt(metricsA?.avgLatency, 0)} ms`}
+                          valueB={`${fmt(metricsB?.avgLatency, 0)} ms`}
+                        />
+                      </tr>
+                      <tr>
+                        <td className="pw-compare__metric">Avg. Cost</td>
+                        <WinnerCell
+                          a={metricsA}
+                          b={metricsB}
+                          winA={lowerIsBetter.cost(metricsA, metricsB)}
+                          valueA={`$${fmt(metricsA?.avgCost)}`}
+                          valueB={`$${fmt(metricsB?.avgCost)}`}
+                        />
+                      </tr>
+                      <tr>
+                        <td className="pw-compare__metric">Error Rate</td>
+                        <WinnerCell
+                          a={metricsA}
+                          b={metricsB}
+                          winA={lowerIsBetter.errors(metricsA, metricsB)}
+                          valueA={`${fmt(errorRate(metricsA), 1)}%`}
+                          valueB={`${fmt(errorRate(metricsB), 1)}%`}
+                        />
+                      </tr>
+                      <tr>
+                        <td className="pw-compare__metric">Requests</td>
+                        <td className="pw-variant-head">
+                          <span className="pw-value">{metricsA?.total ?? 0}</span>
+                        </td>
+                        <td className="pw-variant-head">
+                          <span className="pw-value">{metricsB?.total ?? 0}</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <section className="pw-card">
+        <div className="pw-card__head">
+          <h2 className="pw-h2">Create New A/B Test</h2>
+        </div>
+        <div className="pw-form">
+          <div className="pw-field pw-form__full">
+            <label htmlFor="ab-name">Test Name</label>
             <input
+              id="ab-name"
+              className="pw-input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. tone-test"
+            />
+          </div>
+          <div className="pw-field pw-form__full">
+            <label htmlFor="ab-prompt">Prompt Name</label>
+            <input
+              id="ab-prompt"
+              className="pw-input"
               value={promptName}
               onChange={(e) => setPromptName(e.target.value)}
               placeholder="e.g. support-bot"
             />
-          </label>
+            {versionsLoading && <span className="pw-subtle">Loading versions…</span>}
+            {!versionsLoading && promptName.trim() && versions.length === 0 && (
+              <span className="pw-alert pw-alert--error">
+                No prompt versions found for &quot;{promptName.trim()}&quot;. Create the prompt
+                first (e.g. via npm run demo) and check the exact name.
+              </span>
+            )}
+          </div>
           {versions.length > 0 && (
             <>
-              <label>
-                Variant A (version)
+              <div className="pw-field">
+                <label htmlFor="ab-variant-a">
+                  Variant A <VariantBadge variant="a">A</VariantBadge>
+                </label>
                 <select
+                  id="ab-variant-a"
+                  className="pw-select"
                   value={variantAId ?? ""}
                   onChange={(e) => setVariantAId(Number(e.target.value))}
                 >
@@ -257,10 +378,14 @@ export default function ABTestsPage() {
                     </option>
                   ))}
                 </select>
-              </label>
-              <label>
-                Variant B (version)
+              </div>
+              <div className="pw-field">
+                <label htmlFor="ab-variant-b">
+                  Variant B <VariantBadge variant="b">B</VariantBadge>
+                </label>
                 <select
+                  id="ab-variant-b"
+                  className="pw-select"
                   value={variantBId ?? ""}
                   onChange={(e) => setVariantBId(Number(e.target.value))}
                 >
@@ -270,30 +395,31 @@ export default function ABTestsPage() {
                     </option>
                   ))}
                 </select>
-              </label>
+              </div>
+              <div className="pw-field">
+                <label htmlFor="ab-split">Split % (Variant A)</label>
+                <input
+                  id="ab-split"
+                  className="pw-input"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={splitPercent}
+                  onChange={(e) => setSplitPercent(Number(e.target.value))}
+                />
+              </div>
             </>
           )}
-          {versionsLoading && <p>Loading versions...</p>}
-          {!versionsLoading && promptName.trim() && versions.length === 0 && (
-            <p style={{ color: "#b91c1c", fontSize: 13 }}>
-              No prompt versions found for &quot;{promptName.trim()}&quot;. Create the prompt
-              first (e.g. via npm run demo) and check the exact name.
-            </p>
+        </div>
+        <div className="pw-form__actions">
+          <button className="pw-btn" onClick={createTest}>
+            Create Test
+          </button>
+          {formMsg && (
+            <span className={`pw-alert pw-alert--${formMsg.kind}`}>{formMsg.text}</span>
           )}
-          <label>
-            Split % (Variant A)
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={splitPercent}
-              onChange={(e) => setSplitPercent(Number(e.target.value))}
-            />
-          </label>
-          <button onClick={createTest}>Create</button>
-          {formMsg && <p>{formMsg}</p>}
         </div>
       </section>
-    </main>
+    </>
   );
 }
