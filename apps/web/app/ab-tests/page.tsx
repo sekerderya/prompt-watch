@@ -42,6 +42,7 @@ export default function ABTestsPage() {
   const [name, setName] = useState("");
   const [promptName, setPromptName] = useState("");
   const [versions, setVersions] = useState<PromptVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
   const [variantAId, setVariantAId] = useState<number | null>(null);
   const [variantBId, setVariantBId] = useState<number | null>(null);
   const [splitPercent, setSplitPercent] = useState(50);
@@ -87,8 +88,10 @@ export default function ABTestsPage() {
   useEffect(() => {
     if (!promptName.trim()) {
       setVersions([]);
+      setVersionsLoading(false);
       return;
     }
+    setVersionsLoading(true);
     const timer = setTimeout(async () => {
       try {
         const res = await fetch(`/api/prompts?name=${encodeURIComponent(promptName)}`);
@@ -102,6 +105,8 @@ export default function ABTestsPage() {
         }
       } catch {
         setVersions([]);
+      } finally {
+        setVersionsLoading(false);
       }
     }, 300);
     return () => clearTimeout(timer);
@@ -121,8 +126,14 @@ export default function ABTestsPage() {
 
   async function createTest() {
     setFormMsg(null);
-    if (!name.trim() || !promptName.trim() || variantAId === null || variantBId === null) {
+    if (!name.trim() || !promptName.trim()) {
       setFormMsg("Please fill in all fields");
+      return;
+    }
+    if (variantAId === null || variantBId === null) {
+      setFormMsg(
+        `No prompt versions found for "${promptName.trim()}". Create or run a demo for that prompt first (e.g. via npm run demo), and check the exact name.`
+      );
       return;
     }
     try {
@@ -261,6 +272,13 @@ export default function ABTestsPage() {
                 </select>
               </label>
             </>
+          )}
+          {versionsLoading && <p>Loading versions...</p>}
+          {!versionsLoading && promptName.trim() && versions.length === 0 && (
+            <p style={{ color: "#b91c1c", fontSize: 13 }}>
+              No prompt versions found for &quot;{promptName.trim()}&quot;. Create the prompt
+              first (e.g. via npm run demo) and check the exact name.
+            </p>
           )}
           <label>
             Split % (Variant A)
