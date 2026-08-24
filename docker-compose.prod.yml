@@ -1,0 +1,44 @@
+# Production-shaped stack: a compiled Next.js image, no bind mounts, no dev server.
+#
+#   PROMPTWATCH_API_KEY=$(openssl rand -hex 32) \
+#   POSTGRES_PASSWORD=$(openssl rand -hex 16) \
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# PROMPTWATCH_API_KEY is required here on purpose: the dev stack defaults to open
+# access for the 60-second demo, and that default must not follow the app into a
+# deployment.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: promptwatch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: promptwatch
+    # No published port: only the web service needs to reach the database.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U promptwatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${PROMPTWATCH_BIND:-127.0.0.1}:3000:3000"
+    environment:
+      DATABASE_URL: postgresql://promptwatch:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/promptwatch
+      PROMPTWATCH_API_KEY: ${PROMPTWATCH_API_KEY:?set PROMPTWATCH_API_KEY before deploying}
+      NODE_ENV: production
+    restart: unless-stopped
+
+volumes:
+  pgdata:

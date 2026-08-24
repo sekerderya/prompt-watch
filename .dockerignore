@@ -1,3 +1,19 @@
 node_modules
+**/node_modules
 .next
+**/.next
+dist
+**/dist
 .git
+.github
+
+# Never let real secrets into a build context / image layer.
+.env
+.env.*
+!.env.example
+
+# Local-only noise
+*.log
+coverage
+.vscode
+.idea

@@ -1,9 +1,27 @@
 {
   "private": true,
   "license": "MIT",
-  "workspaces": ["apps/*", "packages/*", "examples/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "examples/*"
+  ],
   "scripts": {
     "build": "npm run build --workspace=packages/sdk && npm run build --workspace=apps/web",
-    "demo": "tsx examples/demo.ts"
+    "demo": "tsx examples/demo.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p packages/sdk/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
+    "test": "npm run test --workspace=packages/sdk && npm run test --workspace=apps/web"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "dotenv": "^16.6.1",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.5.23",
+    "globals": "^15.15.0",
+    "openai": "^4.104.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.68.0"
   }
 }

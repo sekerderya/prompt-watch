@@ -11,7 +11,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Prisma schema generation needs a connection string even if tests don't hit DB
+      # Prisma needs a connection string to generate the client, even though
+      # these tests do not open a connection.
       DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
 
     steps:
@@ -23,7 +24,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build SDK
         run: npm run build --workspace=packages/sdk
@@ -31,21 +32,23 @@ jobs:
       - name: Prisma generate
         run: npx prisma generate --schema=apps/web/prisma/schema.prisma
 
+      # Every step below can fail the build. The previous version wrapped lint
+      # in an `if` that echoed "Lint skipped" and exited 0, so the badge stayed
+      # green whether or not anything was checked.
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Run SDK tests
         run: npm run test --workspace=packages/sdk
 
       - name: Run web tests
         run: npm run test --workspace=apps/web
 
-      - name: Lint (if configured)
-        run: |
-          if [ -f apps/web/package.json ]; then
-            if npm run lint --workspace=apps/web 2>/dev/null; then
-              echo "Lint passed"
-            else
-              echo "Lint skipped or not configured for web"
-            fi
-          fi
-
       - name: Build full project
         run: npm run build
+
+      - name: Build production image
+        run: docker build -f apps/web/Dockerfile -t promptwatch-web:ci .
