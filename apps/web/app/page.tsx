@@ -19,6 +19,8 @@ interface SummaryRow {
   totalCost: number;
   total: number;
   errors: number;
+  /** Traces priced with the SDK's fallback rate because the model was unknown. */
+  unpriced: number;
 }
 
 interface ChartRow {
@@ -92,6 +94,7 @@ export default function Home() {
   const totalCost = rows.reduce((s, r) => s + r.totalCost, 0);
   const totalRequests = rows.reduce((s, r) => s + r.total, 0);
   const totalErrors = rows.reduce((s, r) => s + r.errors, 0);
+  const totalUnpriced = rows.reduce((s, r) => s + (r.unpriced ?? 0), 0);
   const errorRate = totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0;
 
   const chartRows: ChartRow[] = rows.map((r) => ({
@@ -116,8 +119,14 @@ export default function Home() {
       <div className="pw-kpis">
         <div className="pw-kpi pw-kpi--primary">
           <span className="pw-label">Total Cost</span>
-          <span className="pw-kpi__value">${totalCost.toFixed(4)}</span>
-          <span className="pw-subtle">USD, last {DAYS} days</span>
+          <span className="pw-kpi__value">
+            {totalUnpriced > 0 ? "~" : ""}${totalCost.toFixed(4)}
+          </span>
+          <span className="pw-subtle">
+            {totalUnpriced > 0
+              ? `estimated — ${totalUnpriced} trace(s) used fallback pricing`
+              : `USD, last ${DAYS} days`}
+          </span>
         </div>
         <div className="pw-kpi">
           <span className="pw-label">Total Requests</span>

@@ -7,6 +7,16 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum ABTestStatus {
+  ACTIVE
+  STOPPED
+}
+
+enum TraceStatus {
+  SUCCESS
+  ERROR
+}
+
 model Prompt {
   id         Int      @id @default(autoincrement())
   name       String
@@ -26,37 +36,48 @@ model Prompt {
 }
 
 model ABTest {
-  id           Int      @id @default(autoincrement())
+  id           Int          @id @default(autoincrement())
   name         String
-  promptName   String   @map("prompt_name")
-  variantA     Prompt   @relation("VariantA", fields: [variantAId], references: [id])
-  variantAId   Int      @map("variant_a_id")
-  variantB     Prompt   @relation("VariantB", fields: [variantBId], references: [id])
-  variantBId   Int      @map("variant_b_id")
-  splitPercent Int      @default(50) @map("split_percent")
-  status       String   @default("ACTIVE")
-  createdAt    DateTime @default(now()) @map("created_at")
+  promptName   String       @map("prompt_name")
+  variantA     Prompt       @relation("VariantA", fields: [variantAId], references: [id])
+  variantAId   Int          @map("variant_a_id")
+  variantB     Prompt       @relation("VariantB", fields: [variantBId], references: [id])
+  variantBId   Int          @map("variant_b_id")
+  splitPercent Int          @default(50) @map("split_percent")
+  status       ABTestStatus @default(ACTIVE)
+  createdAt    DateTime     @default(now()) @map("created_at")
+  endedAt      DateTime?    @map("ended_at")
 
   traces Trace[]
 
+  // Serves the SDK's /api/ab-tests/active poll and the "is one already running
+  // for this prompt?" check performed when a test is created.
+  @@index([promptName, status])
   @@map("ab_tests")
 }
 
 model Trace {
-  id               Int      @id @default(autoincrement())
-  prompt           Prompt   @relation(fields: [promptId], references: [id])
-  promptId         Int      @map("prompt_id")
-  abTest           ABTest?  @relation(fields: [abTestId], references: [id])
-  abTestId         Int?     @map("ab_test_id")
+  id               Int         @id @default(autoincrement())
+  prompt           Prompt      @relation(fields: [promptId], references: [id])
+  promptId         Int         @map("prompt_id")
+  abTest           ABTest?     @relation(fields: [abTestId], references: [id])
+  abTestId         Int?        @map("ab_test_id")
   variant          String?
-  latencyMs        Int      @map("latency_ms")
-  promptTokens     Int      @map("prompt_tokens")
-  completionTokens Int      @map("completion_tokens")
-  costUsd          Float    @map("cost_usd")
-  status           String
-  createdAt        DateTime @default(now()) @map("created_at")
+  latencyMs        Int         @map("latency_ms")
+  promptTokens     Int         @map("prompt_tokens")
+  completionTokens Int         @map("completion_tokens")
+  costUsd          Float       @map("cost_usd")
+  /// True when costUsd was derived from fallback pricing because the model was
+  /// not in the SDK's pricing table. Aggregates must surface this, otherwise a
+  /// guessed cost is indistinguishable from a measured one.
+  pricingUnknown   Boolean     @default(false) @map("pricing_unknown")
+  status           TraceStatus
+  createdAt        DateTime    @default(now()) @map("created_at")
 
   @@index([promptId, createdAt])
   @@index([abTestId])
+  // The dashboard's rollup filters on created_at alone, which the composite
+  // index above cannot serve.
+  @@index([createdAt])
   @@map("traces")
 }

@@ -8,10 +8,10 @@
  * Running (from the repo root, in order):
  *   1) npm run build --workspace=packages/sdk   (once — the SDK must be compiled)
  *   2) docker compose up -d                     (the backend must be running)
- *   3) npm run demo                             (the script to add to the root package.json)
+ *   3) npm run demo
  *
- *      Add the following script to the root package.json:
- *        "demo": "tsx examples/demo.ts"
+ * The demo stops the A/B test it creates on the way out, so it can be run
+ * repeatedly without leaving conflicting active tests behind.
  *
  * If OPENAI_API_KEY is set (in .env), real OpenAI calls are made.
  * If it is not set, the demo automatically falls back to a mock client with
@@ -23,7 +23,14 @@
 
 import "dotenv/config";
 import OpenAI from "openai";
-import { wrapOpenAI, ABCache, assignVariant, sha256, type ABTestConfig } from "@promptwatch/sdk";
+import {
+  wrapOpenAI,
+  ABCache,
+  TelemetryClient,
+  assignVariant,
+  sha256,
+  type ABTestConfig,
+} from "@promptwatch/sdk";
 
 const BACKEND_URL = process.env.PROMPTWATCH_BACKEND_URL ?? "http://localhost:3000";
 const PROMPT_NAME = "support-agent";
@@ -40,6 +47,13 @@ const PROMPT_V2 =
 const SIMULATED_USERS = ["alice_42", "bob_17", "carol_08", "dave_99", "erin_31", "frank_05"];
 
 const SDK_API_KEY = process.env.PROMPTWATCH_API_KEY;
+
+function authHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    ...(SDK_API_KEY ? { Authorization: `Bearer ${SDK_API_KEY}` } : {}),
+  };
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -142,14 +156,31 @@ function createMockClient(): OpenAI {
 async function resolvePromptDirect(promptText: string): Promise<{ id: number; version: number }> {
   const res = await fetch(`${BACKEND_URL}/api/prompts/resolve`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(SDK_API_KEY ? { Authorization: `Bearer ${SDK_API_KEY}` } : {}),
-    },
+    headers: authHeaders(),
     body: JSON.stringify({ name: PROMPT_NAME, promptText, hash: sha256(promptText) }),
   });
   if (!res.ok) throw new Error(`resolve request failed: HTTP ${res.status}`);
   return res.json();
+}
+
+/** Stops every active test for a prompt, so a re-run starts from a clean slate. */
+async function stopActiveTestsFor(promptName: string): Promise<number> {
+  const res = await fetch(`${BACKEND_URL}/api/ab-tests?status=ACTIVE`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) return 0;
+
+  const active: { id: number; promptName: string }[] = await res.json();
+  const mine = active.filter((t) => t.promptName === promptName);
+
+  for (const test of mine) {
+    await fetch(`${BACKEND_URL}/api/ab-tests/${test.id}`, {
+      method: "PATCH",
+      headers: authHeaders(),
+      body: JSON.stringify({ status: "STOPPED" }),
+    });
+  }
+  return mine.length;
 }
 
 async function preflightCheck(): Promise<void> {
@@ -181,11 +212,16 @@ async function main(): Promise<void> {
   const demoCache = new ABCache();
   demoCache.start(BACKEND_URL, 2000, SDK_API_KEY);
 
+  // An explicit telemetry client so the script can flush buffered traces before
+  // exiting; a short-lived process would otherwise drop whatever is still queued.
+  const telemetry = new TelemetryClient(BACKEND_URL, SDK_API_KEY);
+
   let currentUser: string | undefined;
   const client = wrapOpenAI(rawClient, {
     promptName: PROMPT_NAME,
     backendUrl: BACKEND_URL,
     cache: demoCache,
+    telemetry,
     getDistinctId: () => currentUser,
     apiKey: SDK_API_KEY,
   });
@@ -225,21 +261,35 @@ async function main(): Promise<void> {
   console.log("2️⃣  CREATING AN A/B TEST");
   line();
 
-  const abTestRes = await fetch(`${BACKEND_URL}/api/ab-tests`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(SDK_API_KEY ? { Authorization: `Bearer ${SDK_API_KEY}` } : {}),
-    },
-    body: JSON.stringify({
-      name: "support-agent-tone-test",
-      promptName: PROMPT_NAME,
-      variantAId: v1.id,
-      variantBId: v2.id,
-      splitPercent: 50,
-    }),
-  });
-  if (!abTestRes.ok) throw new Error(`Could not create A/B test: HTTP ${abTestRes.status}`);
+  const createABTest = () =>
+    fetch(`${BACKEND_URL}/api/ab-tests`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        name: "support-agent-tone-test",
+        promptName: PROMPT_NAME,
+        variantAId: v1.id,
+        variantBId: v2.id,
+        splitPercent: 50,
+      }),
+    });
+
+  let abTestRes = await createABTest();
+
+  // The backend allows only one active test per prompt. Older data may contain
+  // several (the rule did not exist yet), so clear all of them, not just the
+  // one named in the conflict, before retrying.
+  if (abTestRes.status === 409) {
+    await abTestRes.body?.cancel();
+    const stopped = await stopActiveTestsFor(PROMPT_NAME);
+    console.log(`ℹ Stopped ${stopped} leftover active test(s) for "${PROMPT_NAME}".`);
+    abTestRes = await createABTest();
+  }
+
+  if (!abTestRes.ok) {
+    const detail = await abTestRes.text();
+    throw new Error(`Could not create A/B test: HTTP ${abTestRes.status} ${detail}`);
+  }
   const createdTest = await abTestRes.json();
 
   console.log(
@@ -285,16 +335,9 @@ async function main(): Promise<void> {
   }
 
   line();
-  console.log(
-    `✅ DEMO COMPLETE — produced ${2 + SIMULATED_USERS.length} traces, 2 prompt versions, 1 active A/B test`
-  );
-  console.log(`👉 Dashboard: ${BACKEND_URL}`);
+  console.log("4️⃣  STREAMING SUPPORT");
   line();
-
-  line();
-  console.log("4️⃣  STREAMING DESTEĞİ");
-  line();
-  console.log("→ Stream:true ile bir çağrı yapıyoruz; chunk'ları for-await ile tüketiyoruz:");
+  console.log("→ Making a stream:true call and consuming the chunks with for-await:");
   const streamParams = {
     model: "gpt-4o-mini",
     messages: [
@@ -307,14 +350,46 @@ async function main(): Promise<void> {
   const stream = await client.chat.completions.create(streamParams as any);
   for await (const chunk of stream) {
     chunkCount++;
-    // Kullanım chunk'ını (sadece usage, choices boş) görmezden geliyoruz;
-    // gerçek bir streaming yanıtı her chunk'ta choices içerir.
+    // Skip the usage-only chunk (usage present, no choices); a real streaming
+    // response carries choices on every content chunk.
     if (chunk.usage && !Array.isArray(chunk.choices)) continue;
-    console.log(`   chunk #${chunkCount}: ${JSON.stringify(chunk.choices?.[0]?.delta?.content?.slice(0, 30) || "(no content)")}`);
+    console.log(
+      `   chunk #${chunkCount}: ${JSON.stringify(
+        chunk.choices?.[0]?.delta?.content?.slice(0, 30) || "(no content)"
+      )}`
+    );
   }
-  console.log(`   Toplam chunk sayısı: ${chunkCount}\n`);
+  console.log(`   Total chunks received: ${chunkCount}\n`);
 
+  line();
+  console.log("5️⃣  STOPPING THE TEST");
+  line();
+  // Leaving the test ACTIVE would make a second `npm run demo` collide with it:
+  // the backend now rejects a second active test for the same prompt.
+  const stopRes = await fetch(`${BACKEND_URL}/api/ab-tests/${createdTest.id}`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify({ status: "STOPPED" }),
+  });
+  if (stopRes.ok) {
+    console.log(`✅ "support-agent-tone-test" stopped — the demo is re-runnable.`);
+    console.log("   Restart it any time from the A/B Tests page.\n");
+  } else {
+    console.warn(`⚠ Could not stop the test (HTTP ${stopRes.status}). Stop it from the dashboard.`);
+  }
+
+  // Flush buffered telemetry before exiting, so the dashboard has every trace.
+  await telemetry.flush();
   demoCache.stop();
+
+  // versioning (2) + bucketing (6) + streaming (1)
+  const traceCount = 2 + SIMULATED_USERS.length + 1;
+  line();
+  console.log(
+    `✅ DEMO COMPLETE — ${traceCount} traces, 2 prompt versions, 1 completed A/B test`
+  );
+  console.log(`👉 Dashboard: ${BACKEND_URL}`);
+  line();
 }
 
 main().catch((err) => {

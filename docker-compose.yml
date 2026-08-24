@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: promptwatch
       POSTGRES_DB: promptwatch
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -23,10 +23,15 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       DATABASE_URL: postgresql://promptwatch:promptwatch@postgres:5432/promptwatch
       WATCHPACK_POLLING: "true"
+      # Compose reads .env for substitution in this file, but does NOT pass those
+      # variables into the container. Without this line, setting
+      # PROMPTWATCH_API_KEY in .env left auth silently disabled inside the
+      # container while the docs claimed it was on.
+      PROMPTWATCH_API_KEY: ${PROMPTWATCH_API_KEY:-}
     volumes:
       - .:/app
       - /app/node_modules

@@ -1,9 +1,12 @@
 export { sha256 } from "./hash";
-export { DEFAULT_PRICING, MODEL_PRICING } from "./pricing";
-export type { ModelPricing } from "./pricing";
+export { DEFAULT_PRICING, MODEL_PRICING, resolvePricing } from "./pricing";
+export type { ModelPricing, PricingResolution } from "./pricing";
 export { wrapOpenAI } from "./wrapOpenAI";
 export type { WrapOpenAIOptions } from "./wrapOpenAI";
 export { ABCache, assignVariant } from "./abTesting";
-export type { ABTestConfig, VariantAssignment } from "./abTesting";
+export type { ABTestConfig, ABCacheOptions, VariantAssignment } from "./abTesting";
 export { TelemetryClient } from "./telemetry";
-export type { TracePayload } from "./telemetry";
+export type { TracePayload, TelemetryOptions, TelemetryStats } from "./telemetry";
+export { wrapStream } from "./streamWrapper";
+export type { StreamOutcome } from "./streamWrapper";
+export { HttpError } from "./http";

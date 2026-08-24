@@ -10,6 +10,7 @@
   --pw-variant-b: #a78bfa;
   --pw-success: #2dd4a7;
   --pw-danger: #f9707f;
+  --pw-warning: #f5b544;
 
   --pw-radius: 10px;
   --pw-radius-sm: 6px;
@@ -543,4 +544,43 @@ a {
   color: var(--pw-success);
   background: rgba(45, 212, 167, 0.1);
   border-color: rgba(45, 212, 167, 0.3);
+}
+.pw-alert--warn {
+  color: var(--pw-warning);
+  background: rgba(245, 181, 68, 0.1);
+  border-color: rgba(245, 181, 68, 0.3);
+}
+
+/* Secondary action next to a heading — stopping or restarting a test. */
+.pw-btn--ghost {
+  background: transparent;
+  color: var(--pw-text);
+  border-color: var(--pw-border);
+  font-weight: 500;
+}
+
+.pw-btn--ghost:hover {
+  background: var(--pw-surface-2);
+  filter: none;
+}
+
+.pw-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: none;
+}
+
+.pw-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pw-space-3);
+  flex-wrap: wrap;
+}
+
+/* The per-metric verdict line under each metric label. */
+.pw-compare__metric .pw-subtle {
+  display: block;
+  margin-top: 2px;
+  font-weight: 400;
+  font-size: 11px;
 }

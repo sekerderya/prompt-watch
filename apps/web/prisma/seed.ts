@@ -1,6 +1,9 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import { prisma } from "../lib/prisma";
 
-const prisma = new PrismaClient();
+/** Matches the SDK's gpt-4o-mini entry so seeded costs look like real ones. */
+const PROMPT_PRICE_PER_1K = 0.00015;
+const COMPLETION_PRICE_PER_1K = 0.0006;
 
 async function main() {
   const promptNames = ["support-bot", "sales-copilot", "code-reviewer"];
@@ -23,7 +26,7 @@ async function main() {
 
   const count = 30 + Math.floor(Math.random() * 11);
   const now = Date.now();
-  const traces = [];
+  const traces: Prisma.TraceCreateManyInput[] = [];
 
   for (let i = 0; i < count; i++) {
     const prompt = prompts[Math.floor(Math.random() * prompts.length)];
@@ -31,19 +34,25 @@ async function main() {
     const createdAt = new Date(
       now - daysAgo * 24 * 60 * 60 * 1000 - Math.random() * 24 * 60 * 60 * 1000
     );
-    const status = Math.random() < 0.8 ? "SUCCESS" : "ERROR";
     const promptTokens = Math.floor(Math.random() * 400) + 50;
     const completionTokens = Math.floor(Math.random() * 800) + 40;
+    // A slice of traces stands in for calls to a model the pricing table does
+    // not know, so the dashboard's "estimated cost" warning is exercised.
+    const pricingUnknown = Math.random() < 0.1;
 
     traces.push({
       promptId: prompt.id,
       latencyMs: Math.floor(Math.random() * 3000) + 200,
       promptTokens,
       completionTokens,
-      costUsd: Math.round(
-        ((promptTokens / 1000) * 0.0025 + (completionTokens / 1000) * 0.0015) * 100000
-      ) / 100000,
-      status,
+      costUsd:
+        Math.round(
+          ((promptTokens / 1000) * PROMPT_PRICE_PER_1K +
+            (completionTokens / 1000) * COMPLETION_PRICE_PER_1K) *
+            1_000_000
+        ) / 1_000_000,
+      pricingUnknown,
+      status: Math.random() < 0.8 ? "SUCCESS" : "ERROR",
       createdAt,
     });
   }
