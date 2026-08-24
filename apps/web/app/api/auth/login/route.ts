@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isValidApiKey, hashValue } from "@/lib/auth";
+import { isValidApiKey } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,10 +22,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const hashed = await hashValue(apiKey);
     const response = NextResponse.json({ ok: true });
 
-    response.cookies.set("pw_session", hashed, {
+    response.cookies.set("pw_session", apiKey, {
       httpOnly: true,
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
