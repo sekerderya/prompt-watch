@@ -93,8 +93,7 @@ function createMockClient(): OpenAI {
                   {
                     index: 0,
                     finish_reason: "stop",
-                    message: {
-                      role: "assistant",
+                    delta: {
                       content: "(mock streaming response) Hello, world! How can I help?",
                     },
                   },
@@ -305,13 +304,13 @@ async function main(): Promise<void> {
     stream: true,
   };
   let chunkCount = 0;
-  const stream = client.chat.completions.create(streamParams as any);
+  const stream = await client.chat.completions.create(streamParams as any);
   for await (const chunk of stream) {
     chunkCount++;
     // Kullanım chunk'ını (sadece usage, choices boş) görmezden geliyoruz;
     // gerçek bir streaming yanıtı her chunk'ta choices içerir.
     if (chunk.usage && !Array.isArray(chunk.choices)) continue;
-    console.log(`   chunk #${chunkCount}: ${JSON.stringify(chunk.choices?.[0]?.message?.content?.slice(0, 30) || "(no content)")}`);
+    console.log(`   chunk #${chunkCount}: ${JSON.stringify(chunk.choices?.[0]?.delta?.content?.slice(0, 30) || "(no content)")}`);
   }
   console.log(`   Toplam chunk sayısı: ${chunkCount}\n`);
 
