@@ -16,6 +16,9 @@
  * If OPENAI_API_KEY is set (in .env), real OpenAI calls are made.
  * If it is not set, the demo automatically falls back to a mock client with
  * deterministic delays so it never depends on the network / an API key.
+ *
+ * If PROMPTWATCH_API_KEY is set (in .env), the SDK uses it for authenticated
+ * backend requests. If not set, auth is disabled (default for local dev).
  */
 
 import "dotenv/config";
@@ -35,6 +38,8 @@ const PROMPT_V2 =
   "Answer in a short, clear and warm tone. No unnecessary elaboration.";
 
 const SIMULATED_USERS = ["alice_42", "bob_17", "carol_08", "dave_99", "erin_31", "frank_05"];
+
+const SDK_API_KEY = process.env.PROMPTWATCH_API_KEY;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -87,7 +92,10 @@ function createMockClient(): OpenAI {
 async function resolvePromptDirect(promptText: string): Promise<{ id: number; version: number }> {
   const res = await fetch(`${BACKEND_URL}/api/prompts/resolve`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(SDK_API_KEY ? { Authorization: `Bearer ${SDK_API_KEY}` } : {}),
+    },
     body: JSON.stringify({ name: PROMPT_NAME, promptText, hash: sha256(promptText) }),
   });
   if (!res.ok) throw new Error(`resolve request failed: HTTP ${res.status}`);
@@ -96,7 +104,9 @@ async function resolvePromptDirect(promptText: string): Promise<{ id: number; ve
 
 async function preflightCheck(): Promise<void> {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/ab-tests/active`);
+    const res = await fetch(`${BACKEND_URL}/api/ab-tests/active`, {
+      headers: SDK_API_KEY ? { Authorization: `Bearer ${SDK_API_KEY}` } : {},
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch {
     console.error(`❌ Cannot reach the backend (${BACKEND_URL}).`);
@@ -119,7 +129,7 @@ async function main(): Promise<void> {
   // Demo-specific: create our own ABCache and start it with a 2-second poll interval
   // (the production default is 30s — shortened here to fit the 60-second demo).
   const demoCache = new ABCache();
-  demoCache.start(BACKEND_URL, 2000);
+  demoCache.start(BACKEND_URL, 2000, SDK_API_KEY);
 
   let currentUser: string | undefined;
   const client = wrapOpenAI(rawClient, {
@@ -127,6 +137,7 @@ async function main(): Promise<void> {
     backendUrl: BACKEND_URL,
     cache: demoCache,
     getDistinctId: () => currentUser,
+    apiKey: SDK_API_KEY,
   });
 
   line();
@@ -166,7 +177,10 @@ async function main(): Promise<void> {
 
   const abTestRes = await fetch(`${BACKEND_URL}/api/ab-tests`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(SDK_API_KEY ? { Authorization: `Bearer ${SDK_API_KEY}` } : {}),
+    },
     body: JSON.stringify({
       name: "support-agent-tone-test",
       promptName: PROMPT_NAME,

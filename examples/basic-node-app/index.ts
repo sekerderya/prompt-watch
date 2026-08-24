@@ -14,10 +14,11 @@ if (!apiKey) {
 const backendUrl = process.env.PROMPTWATCH_BACKEND_URL ?? "http://localhost:3000";
 const promptName = "basic-node-app";
 const systemPrompt = "You are the demo assistant for the basic-node-app.";
+const sdkApiKey = process.env.PROMPTWATCH_API_KEY;
 
 const cache = new ABCache();
-cache.start(backendUrl, 30_000);
-const telemetry = new TelemetryClient(backendUrl);
+cache.start(backendUrl, 30_000, sdkApiKey);
+const telemetry = new TelemetryClient(backendUrl, sdkApiKey);
 
 const userIds = ["user-alice", "user-bob", "user-carol"];
 let userIndex = 0;
@@ -28,6 +29,7 @@ const client = wrapOpenAI(new OpenAI({ apiKey }), {
   cache,
   telemetry,
   getDistinctId: () => userIds[userIndex % userIds.length],
+  apiKey: sdkApiKey,
 });
 
 const questions = ["Hello! What is this project?", "What does it do in one line?", "Thanks!"];

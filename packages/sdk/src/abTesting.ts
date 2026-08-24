@@ -28,14 +28,24 @@ export function assignVariant(test: ABTestConfig, distinctId?: string): VariantA
   };
 }
 
+function getAuthHeaders(apiKey?: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+  return headers;
+}
+
 export class ABCache {
   private tests = new Map<string, ABTestConfig>();
   private timer: NodeJS.Timeout | undefined;
   private backendUrl: string | undefined;
+  private apiKey: string | undefined;
 
-  start(backendUrl: string, intervalMs = 30000): void {
+  start(backendUrl: string, intervalMs = 30000, apiKey?: string): void {
     this.stop();
     this.backendUrl = backendUrl;
+    this.apiKey = apiKey;
     void this.refresh();
     this.timer = setInterval(() => void this.refresh(), intervalMs);
   }
@@ -55,7 +65,8 @@ export class ABCache {
     if (!this.backendUrl) return;
     try {
       const res = await (globalThis.fetch as typeof fetch)(
-        `${this.backendUrl}/api/ab-tests/active`
+        `${this.backendUrl}/api/ab-tests/active`,
+        { headers: getAuthHeaders(this.apiKey) }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const active = (await res.json()) as ABTestConfig[];

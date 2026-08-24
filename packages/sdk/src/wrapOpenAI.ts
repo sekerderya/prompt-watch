@@ -11,6 +11,7 @@ export interface WrapOpenAIOptions {
   getDistinctId?: () => string | undefined;
   cache?: ABCache;
   telemetry?: TelemetryClient;
+  apiKey?: string;
 }
 
 interface ResolveResponse {
@@ -23,20 +24,33 @@ type CreateFn = OpenAI.Chat.Completions["create"];
 
 const defaultCaches = new Map<string, ABCache>();
 
-function getOrCreateCache(backendUrl: string): ABCache {
-  const existing = defaultCaches.get(backendUrl);
+function getOrCreateCache(backendUrl: string, apiKey?: string): ABCache {
+  const cacheKey = apiKey ? `${backendUrl}:${apiKey}` : backendUrl;
+  const existing = defaultCaches.get(cacheKey);
   if (existing) return existing;
   const cache = new ABCache();
-  cache.start(backendUrl);
-  defaultCaches.set(backendUrl, cache);
+  cache.start(backendUrl, 30000, apiKey);
+  defaultCaches.set(cacheKey, cache);
   return cache;
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T | null> {
+function getAuthHeaders(apiKey?: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+  return headers;
+}
+
+async function postJson<T>(
+  url: string,
+  body: unknown,
+  apiKey?: string
+): Promise<T | null> {
   try {
     const res = await (globalThis.fetch as typeof fetch)(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getAuthHeaders(apiKey),
       body: JSON.stringify(body),
     });
     if (!res.ok) return null;
@@ -51,13 +65,14 @@ function resolvePrompt(
   backendUrl: string,
   promptName: string,
   promptText: string,
-  hash: string
+  hash: string,
+  apiKey?: string
 ): Promise<ResolveResponse | null> {
-  return postJson<ResolveResponse>(`${backendUrl}/api/prompts/resolve`, {
-    name: promptName,
-    promptText,
-    hash,
-  });
+  return postJson<ResolveResponse>(
+    `${backendUrl}/api/prompts/resolve`,
+    { name: promptName, promptText, hash },
+    apiKey
+  );
 }
 
 function costUsd(
@@ -78,9 +93,9 @@ interface TraceMeta {
 }
 
 export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
-  const { promptName, backendUrl, getDistinctId } = options;
-  const cache = options.cache ?? getOrCreateCache(backendUrl);
-  const telemetry = options.telemetry ?? new TelemetryClient(backendUrl);
+  const { promptName, backendUrl, getDistinctId, apiKey } = options;
+  const cache = options.cache ?? getOrCreateCache(backendUrl, apiKey);
+  const telemetry = options.telemetry ?? new TelemetryClient(backendUrl, apiKey);
   const completions = client.chat.completions;
   const originalCreate = completions.create.bind(completions);
 
@@ -116,7 +131,7 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
       };
     } else if (systemMessage && typeof systemMessage.content === "string") {
       const text = systemMessage.content;
-      resolvePromise = resolvePrompt(backendUrl, promptName, text, sha256(text));
+      resolvePromise = resolvePrompt(backendUrl, promptName, text, sha256(text), apiKey);
     }
 
     const startedAt = Date.now();

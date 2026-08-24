@@ -150,3 +150,21 @@ Then open **http://localhost:3000** — the dashboard updates in real time as th
 6. **Run the demo** — `npm run demo` drives the full flow end-to-end: automatic prompt versioning, A/B test creation, and sticky per-user bucketing, then streams telemetry to the dashboard.
 
 By default the demo runs against a deterministic mock client, so no API key is required. To see it run against real OpenAI calls, set `OPENAI_API_KEY` in `.env` before running `npm run demo`.
+
+**Authentication (optional):** By default the backend runs with auth DISABLED (no `PROMPTWATCH_API_KEY` set), so the Quickstart and demo work out of the box. For any shared or internet-facing deployment, set `PROMPTWATCH_API_KEY` in `.env` — the backend will then require `Authorization: Bearer <key>` on all API routes and the SDK will automatically attach the key when you pass `apiKey` to `wrapOpenAI()`.
+
+## Architectural Decision Records
+
+### ADR-4 — Opt-In Shared-Secret Auth, Not Multi-User Accounts
+
+**Decision:** PromptWatch uses a single shared secret (`PROMPTWATCH_API_KEY`) that gates all backend API access. When the env var is unset or empty, auth is completely disabled — the Quickstart, demo, and local development experience remains identical to the pre-auth version. When set, all API routes (except `/login` and static assets) require `Authorization: Bearer <key>` or a valid `pw_session` cookie; the SDK attaches the key via an `apiKey` option.
+
+**Why not a full user/session system:** PromptWatch is a self-hosted, single-operator observability tool for LLM system prompts. The threat model is "protect the dashboard and API from casual access on a shared network," not "isolate multiple tenants with per-user RBAC." A full auth system (passwords, email verification, password reset, sessions with CSRF, user management UI) adds enormous surface area and operational burden for a use case that doesn't need it. A single shared secret is the simplest thing that provides meaningful gatekeeping.
+
+**Why default OFF:** Local development and the 60-second demo must work with `docker compose up -d` and `npm run demo` — zero configuration. Requiring a generated key before the first `npm run demo` adds friction that defeats the "drop-in" promise. The trade-off is explicit: anyone who deploys PromptWatch to a shared network without setting `PROMPTWATCH_API_KEY` is consciously choosing open access. The docs state this clearly.
+
+**Why hash + constant-time comparison:** The secret is never stored in plaintext in the database or logs. The middleware hashes the incoming candidate with SHA-256 (via Web Crypto API, available in both Node and Edge runtimes) and compares it to the hash of the configured key using a byte-by-byte XOR accumulation loop that never early-exits. This defeats timing attacks even if the attacker can measure nanosecond-scale differences, and because both sides are pre-hashed to fixed-length hex strings, no length-based exception can occur (unlike `node:crypto.timingSafeEqual` which throws on length mismatch).
+
+**Why Web Crypto API, not `node:crypto`:** Next.js Middleware runs on the Edge runtime where `node:crypto` is unavailable. `crypto.subtle.digest("SHA-256", ...)` works identically in Node, Edge, and browser contexts, keeping the auth logic portable and runtime-agnostic.
+
+**When to revisit:** If PromptWatch ever needs multi-tenant deployments (separate teams on the same backend, per-user audit logs, SSO/SAML/OIDC integration), the shared-secret model will need to be replaced with a proper identity provider. That is explicitly out of scope today — the architecture document marks this as a future decision point.

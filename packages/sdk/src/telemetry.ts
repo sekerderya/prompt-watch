@@ -11,10 +11,18 @@ export interface TracePayload {
 
 const MAX_PENDING = 50;
 
-async function postJson(url: string, body: unknown): Promise<void> {
+function getAuthHeaders(apiKey?: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+  return headers;
+}
+
+async function postJson(url: string, body: unknown, apiKey?: string): Promise<void> {
   const res = await (globalThis.fetch as typeof fetch)(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders(apiKey),
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -23,10 +31,13 @@ async function postJson(url: string, body: unknown): Promise<void> {
 export class TelemetryClient {
   private pending: Promise<void>[] = [];
 
-  constructor(private readonly backendUrl: string) {}
+  constructor(
+    private readonly backendUrl: string,
+    private readonly apiKey?: string
+  ) {}
 
   send(payload: TracePayload): void {
-    const promise = postJson(`${this.backendUrl}/api/traces`, payload).catch((err) => {
+    const promise = postJson(`${this.backendUrl}/api/traces`, payload, this.apiKey).catch((err) => {
       console.error("[promptwatch] trace send failed:", err);
     });
     this.pending.push(promise);
