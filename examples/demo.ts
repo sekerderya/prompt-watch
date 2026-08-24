@@ -56,6 +56,57 @@ function createMockClient(): OpenAI {
       completions: {
         create: async (params: any) => {
           await sleep(180 + Math.random() * 200);
+          if (params.stream === true) {
+            // Streaming mode: yield several fake chunks + a synthetic usage-only chunk
+            let chunkIdx = 0;
+            return (async function* streamChunks() {
+              // Chunk 1: first content chunk
+              yield {
+                choices: [
+                  {
+                    index: 0,
+                    delta: { content: "(mock streaming) Hello, " },
+                  },
+                ],
+              };
+              // Chunk 2: second content chunk
+              yield {
+                choices: [
+                  {
+                    index: 0,
+                    delta: { content: "world! " },
+                  },
+                ],
+              };
+              // Chunk 3: usage-only chunk (synthetic, no choices) — injected include_usage
+              yield {
+                usage: {
+                  prompt_tokens: 40 + chunkIdx,
+                  completion_tokens: 25 + chunkIdx,
+                  total_tokens: 65 + chunkIdx,
+                },
+              };
+              chunkIdx++;
+              // Chunk 4: final content chunk with finish reason
+              yield {
+                choices: [
+                  {
+                    index: 0,
+                    finish_reason: "stop",
+                    message: {
+                      role: "assistant",
+                      content: "(mock streaming response) Hello, world! How can I help?",
+                    },
+                  },
+                ],
+                usage: {
+                  prompt_tokens: 50,
+                  completion_tokens: 35,
+                  total_tokens: 85,
+                },
+              };
+            })();
+          }
           const systemText: string =
             params.messages?.find((m: any) => m.role === "system")?.content ?? "";
           const promptTokens = Math.max(20, Math.round(systemText.length / 4));
@@ -240,6 +291,29 @@ async function main(): Promise<void> {
   );
   console.log(`👉 Dashboard: ${BACKEND_URL}`);
   line();
+
+  line();
+  console.log("4️⃣  STREAMING DESTEĞİ");
+  line();
+  console.log("→ Stream:true ile bir çağrı yapıyoruz; chunk'ları for-await ile tüketiyoruz:");
+  const streamParams = {
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: PROMPT_V1 },
+      { role: "user", content: USER_QUESTION },
+    ],
+    stream: true,
+  };
+  let chunkCount = 0;
+  const stream = client.chat.completions.create(streamParams as any);
+  for await (const chunk of stream) {
+    chunkCount++;
+    // Kullanım chunk'ını (sadece usage, choices boş) görmezden geliyoruz;
+    // gerçek bir streaming yanıtı her chunk'ta choices içerir.
+    if (chunk.usage && !Array.isArray(chunk.choices)) continue;
+    console.log(`   chunk #${chunkCount}: ${JSON.stringify(chunk.choices?.[0]?.message?.content?.slice(0, 30) || "(no content)")}`);
+  }
+  console.log(`   Toplam chunk sayısı: ${chunkCount}\n`);
 
   demoCache.stop();
 }
