@@ -4,6 +4,7 @@ import { sha256 } from "./hash";
 import { DEFAULT_PRICING, MODEL_PRICING, type ModelPricing } from "./pricing";
 import { ABCache, assignVariant, type ABTestConfig } from "./abTesting";
 import { TelemetryClient } from "./telemetry";
+import { wrapStream } from "./streamWrapper";
 
 export interface WrapOpenAIOptions {
   promptName: string;
@@ -132,6 +133,61 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
     } else if (systemMessage && typeof systemMessage.content === "string") {
       const text = systemMessage.content;
       resolvePromise = resolvePrompt(backendUrl, promptName, text, sha256(text), apiKey);
+    }
+
+    if ((requestBody as any).stream === true) {
+      const body: any = requestBody;
+      const originalStreamOptions = body.stream_options;
+      const injectedIncludeUsage = !originalStreamOptions?.include_usage;
+      const finalBody = injectedIncludeUsage
+        ? { ...body, stream_options: { ...originalStreamOptions, include_usage: true } }
+        : body;
+
+      const streamStartedAt = Date.now();
+      const rawStream: any = await originalCreate(finalBody as never, requestOptions as never);
+
+      const sendTrace = (
+        status: "SUCCESS" | "ERROR",
+        usage: any,
+        firstChunkAt: number | undefined
+      ) => {
+        const latencyMs = (firstChunkAt ?? Date.now()) - streamStartedAt;
+        const promptTokens = usage?.prompt_tokens ?? 0;
+        const completionTokens = usage?.completion_tokens ?? 0;
+        const cost = usage ? costUsd(finalBody.model, usage) : 0;
+
+        if (traceMeta) {
+          telemetry.send({
+            promptId: traceMeta.promptId,
+            abTestId: traceMeta.abTestId,
+            variant: traceMeta.variant,
+            latencyMs,
+            promptTokens,
+            completionTokens,
+            costUsd: cost,
+            status,
+          });
+        } else if (resolvePromise) {
+          resolvePromise.then((resolved) => {
+            if (!resolved) return;
+            telemetry.send({
+              promptId: resolved.id,
+              latencyMs,
+              promptTokens,
+              completionTokens,
+              costUsd: cost,
+              status,
+            });
+          });
+        }
+      };
+
+      return wrapStream(
+        rawStream,
+        injectedIncludeUsage,
+        (usage, firstChunkAt) => sendTrace("SUCCESS", usage, firstChunkAt),
+        (_err, firstChunkAt) => sendTrace("ERROR", undefined, firstChunkAt ?? undefined)
+      ) as any;
     }
 
     const startedAt = Date.now();
