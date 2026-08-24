@@ -170,3 +170,23 @@ By default the demo runs against a deterministic mock client, so no API key is r
 **When to revisit:** If PromptWatch ever needs multi-tenant deployments (separate teams on the same backend, per-user audit logs, SSO/SAML/OIDC integration), the shared-secret model will need to be replaced with a proper identity provider. That is explicitly out of scope today — the architecture document marks this as a future decision point.
 
 **Note on session cookie:** The `pw_session` cookie carries the raw shared secret (`PROMPTWATCH_API_KEY`) directly — not a hashed value, not a separate session token. This is an explicit design choice for a single-operator, self-hosted tool: the credential itself IS the session value. It is protected by HttpOnly, Secure (in production), and SameSite=Lax flags. There is no additional session-layer middleware beyond the simple Bearer-cookie check in the auth middleware. For a one-person tool, this eliminates the complexity of a full session management system while still providing meaningful access control. Acceptable because the threat model is "protect from casual access on shared networks," not "isolate multi-tenant users."
+
+### ADR-5 — Transparent Streaming Support via Stream Wrapping
+
+**Decision:** Wrap the OpenAI `create()` response stream with `wrapStream` so that
+`include_usage` can be injected silently (the synthetic usage-only chunk is never
+yielded to the caller). Latency is measured as time-to-first-chunk, not total stream
+duration.
+
+**Why:** Transparent wrapping means existing non-streaming code paths are untouched; the
+streaming block is inserted only when `(requestBody as any).stream === true`. This keeps
+the fire-and-forget telemetry principle intact and avoids blocking the real OpenAI call.
+
+**Trade-off:** The `wrapStream` adapter only supports `for-await-of` consumption — it does
+not replicate the Stream class's other methods (pipe, transform, etc.). Users needing
+advanced stream transformations must handle them outside the wrapper. This is explicitly
+a telemetry-only adapter, not a full stream pipeability layer.
+
+**When-to-revisit:** If future work requires full stream pipeability or Backpressure-aware
+processing, a dedicated `Stream` class with full AsyncIterable operations should be built
+separately, leaving `wrapStream` as the lightweight telemetry-only adapter.

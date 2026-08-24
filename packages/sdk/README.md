@@ -68,19 +68,3 @@ cache.start(process.env.PROMPTWATCH_BACKEND_URL!, 30_000);
 wrapOpenAI(openai, { promptName: "support-bot", backendUrl, cache });
 // on shutdown: cache.stop();
 ```
-
-## ADR-5: Transparent Streaming Support via Stream Wrapping
-
-- **Decision**: Wrap the OpenAI `create()` response stream with `wrapStream` so that
-  `include_usage` can be injected silently (the synthetic usage-only chunk is never
-  yielded to the caller). Latency is measured as time-to-first-chunk, not total stream
-  duration.
-- **Why**: Transparent wrapping means existing non-streaming code paths are untouched; the
-  streaming block is inserted only when `(requestBody as any).stream === true`. This keeps
-  the fire-and-forget telemetry principle intact and avoids blocking the real OpenAI call.
-- **Trade-off**: The `Stream` class's other methods (e.g., pipe, transform) are not replicated
-  — only `for-await-of` consumption is supported. Users needing advanced stream transformations
-  must handle them outside the wrapper.
-- **When-to-revisit**: If future work requires full stream pipeability or Backpressure-aware
-  processing, a dedicated `Stream` class with full AsyncIterable operations should be built
-  separately, leaving `wrapStream` as the lightweight telemetry-only adapter.
