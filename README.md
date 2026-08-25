@@ -11,6 +11,8 @@
 
 PromptWatch wraps your existing OpenAI client with a single function call. From that point on, every system prompt is automatically hashed and versioned, requests can be routed through a live A/B test with sticky per-user bucketing, and every call's cost, latency, and outcome streams to a self-hosted dashboard — without ever touching your users' data, and without PromptWatch's own backend ever sitting on the path of your model call.
 
+Cost and latency come for free. Whether one prompt produces *better answers* is something only your application can know, so it reports a score per call and the dashboard compares variants on it — declaring a winner only when the difference is statistically significant.
+
 `wrapOpenAI` returns a proxy; the client you pass in is left untouched, and wrapping the same client twice is a no-op rather than a source of duplicate traces.
 
 ## Quickstart
@@ -43,14 +45,63 @@ By default the demo runs against a deterministic mock client, so no API key is r
 
 | Command | What it does |
 | --- | --- |
-| `npm test` | SDK and backend test suites |
+| `npm test` | SDK and backend unit suites |
+| `npm run test:db --workspace=apps/web` | Route handlers against a real Postgres (needs `DATABASE_URL` ending in `_test`) |
 | `npm run lint` | ESLint across every workspace |
 | `npm run typecheck` | `tsc --noEmit` for the SDK and the web app |
 | `npm run build` | Builds the SDK, then the Next.js app |
 
-CI runs all four plus a production image build, and every one of them can fail the build.
+CI runs all of these plus a production image build against a throwaway Postgres service,
+and every one of them can fail the build.
 
 **Authentication (optional):** By default the backend runs with auth DISABLED (no `PROMPTWATCH_API_KEY` set), so the Quickstart and demo work out of the box. For any shared or internet-facing deployment, set `PROMPTWATCH_API_KEY` in `.env` — `docker-compose.yml` passes it into the backend container, which then requires `Authorization: Bearer <key>` on all API routes. The SDK attaches the key automatically when you pass `apiKey` to `wrapOpenAI()`.
+
+## Reporting outcomes
+
+Cost and latency are measured for you. Whether an answer was any *good* is something only
+your application knows, so PromptWatch asks for it rather than guessing.
+
+`wrapOpenAI` hands you a trace id through `onTrace`, which fires synchronously inside
+`create()` — before the request reaches OpenAI, so the id is available next to the call
+site even when many calls are in flight:
+
+```ts
+import { wrapOpenAI, OutcomeClient } from "@promptwatch/sdk";
+
+const outcomes = new OutcomeClient(backendUrl, apiKey);
+
+let pendingTraceId: string | undefined;
+const client = wrapOpenAI(openai, {
+  promptName: "support-agent",
+  backendUrl,
+  onTrace: (handle) => { pendingTraceId = handle.traceId; },
+});
+
+const answer = await client.chat.completions.create({ model, messages });
+const traceId = pendingTraceId!;   // captured before the first await
+
+// ...whenever the outcome is known: a thumbs-up, a resolved ticket, a grader's verdict.
+await outcomes.record(traceId, { score: 1, label: "resolved" });
+```
+
+`score` is normalised to `0..1` so any prompt's variants stay comparable — a binary outcome
+is `0` or `1`, a 1-5 star rating is `(stars - 1) / 4`. Recording is idempotent per trace id,
+so a user changing their rating updates the row instead of adding a contradictory second
+one, and an outcome may safely arrive before the trace it belongs to.
+
+The dashboard then compares variants on quality, and only calls a winner once the gap is
+statistically significant. `npm run demo` does exactly this end to end: it drives 160 calls
+whose simulated satisfaction differs by variant, and the A/B page ends up reporting
+something like
+
+```
+Quality Score   54.0% (n=87)      78.1% (n=73)  winner    p = 0.001
+Avg. Latency    291 ms            280 ms                  no significant difference (p = 0.205)
+Avg. Cost       $0.000035         $0.000034               no significant difference (p = 0.310)
+```
+
+— which is the point of the whole feature: the operational metrics say the two prompts are
+indistinguishable, and only the outcome signal reveals that one is meaningfully better.
 
 ## Deploying
 
@@ -116,7 +167,12 @@ sequenceDiagram
 
     SDK--)API: POST /api/traces (queued, batched, never awaited)
     Note right of SDK: role === "user" content is never transmitted
-    API->>DB: INSERT trace(promptId, abTestId?, latencyMs, costUsd, pricingUnknown, status)
+    API->>DB: INSERT trace(promptId, abTestId?, latencyMs, costUsd, pricingUnknown, status, clientTraceId)
+
+    Note over App,DB: Later, once the application knows how the answer landed
+    App->>API: POST /api/outcomes {traceId, score}
+    API->>DB: UPSERT outcome ON client_trace_id
+    Note right of API: joined to the trace on client_trace_id,<br/>in either arrival order
 ```
 
 ### System Components
@@ -146,7 +202,9 @@ flowchart TB
 
     SDK ==>|"real LLM call — synchronous"| OpenAI
     SDK -.->|"POST /api/prompts/resolve — fire-and-forget"| API
-    SDK -.->|"POST /api/traces — fire-and-forget"| API
+    SDK -.->|"POST /api/traces — batched, fire-and-forget"| API
+    SDK -->|"onTrace(traceId)"| App
+    App ==>|"POST /api/outcomes — the quality signal"| API
     Cache -.->|"GET /api/ab-tests/active"| API
     Browser -->|"localhost:3000"| Dash
 
@@ -257,10 +315,11 @@ is what makes that acceptable; it fires before any p-value is trusted. The aggre
 query returns `STDDEV_SAMP` and per-arm counts so the decision is made from spread and
 sample size, not from means alone.
 
-**What this still cannot tell you:** every metric here is an operational one. PromptWatch
-observes cost, latency and failures — never model output (ADR-2) — so it can say which
-prompt is cheaper or faster, never which one answers better. Quality comparison needs an
-outcome signal the host application supplies, and that does not exist yet.
+**Quality is the metric that matters, and it has to come from you.** Cost, latency and
+error rate are all derivable from the call itself, and they are rarely why one prompt beats
+another. PromptWatch never sees model output (ADR-2), so it cannot judge an answer — the
+host application reports a score and the dashboard compares variants on it, using the same
+significance gate and the one direction where higher wins. See ADR-8.
 
 ### ADR-7 — A Guessed Cost Is Labelled as a Guess
 
@@ -280,3 +339,59 @@ Two changes follow from that. Prices are resolved from the *requested* model, ma
 dated suffixes by prefix; and an unmatched model is surfaced rather than absorbed, because
 a wrong number presented confidently is worse than an acknowledged estimate. Adding a
 model to `packages/sdk/src/pricing.ts` removes the flag.
+
+### ADR-8 — Outcomes Keyed on a Client-Generated Id, Not a Foreign Key
+
+**Decision:** The SDK generates a UUID per call, hands it to the host application through
+`onTrace`, and stamps it on the trace. Outcomes are stored in their own table keyed on the
+same id, with **no foreign key** between them, and joined on that column when metrics are
+computed.
+
+**Why a client-generated id:** the database id is not known until the trace is written, and
+the trace is written asynchronously and in batches — long after the host application has
+moved on. Generating the id up front means it exists before the request even reaches
+OpenAI, so it can be captured next to the call site and used for a request that ends up
+failing.
+
+**Why `onTrace` fires before the OpenAI call:** the application usually needs to stash the
+id alongside its own request context, and by the time a response arrives that context is
+often gone. Firing early also makes the callback synchronous — it runs before the first
+`await` inside `create()` — so the id can be read immediately after the call expression and
+stays correct with many calls in flight. That ordering is a contract, and a test asserts it
+rather than leaving it to chance.
+
+**Why no foreign key:** traces are buffered and batched while outcomes are sent directly, so
+an outcome routinely arrives *before* the trace it belongs to. A foreign key would reject
+exactly the case the design expects. Both sides carry a unique `client_trace_id`; the join
+is one-to-one and therefore cannot inflate the operational aggregates, which a test checks.
+
+**Why a single 0..1 score:** one normalised number keeps variants comparable across prompts
+and keeps the significance machinery honest with a single test. Binary outcomes are 0 or 1;
+a star rating is rescaled. A short `label` records what was measured and is length-capped at
+the API boundary so it stays a tag rather than a channel for user content (ADR-2).
+
+**Trade-off, stated plainly:** PromptWatch cannot verify a score. A team that reports
+garbage gets a confident comparison of garbage. The alternative — inferring quality from
+model output — is the thing ADR-2 exists to forbid.
+
+### ADR-9 — Corrections
+
+Each entry below is a claim this project made and did not keep. They are recorded rather
+than quietly fixed, because the gap between the two is the most useful thing a reader can
+know about a codebase.
+
+| Claim | What was actually true | Now enforced by |
+| --- | --- | --- |
+| "Real-time error rate telemetry" | The non-streaming path had no `try/catch`, so `status: "ERROR"` could never be produced. The dashboard's error rate was structurally 0%; the seed script's fake errors were the only ones ever seen. | `wrapOpenAI` traces both outcomes; `records an ERROR trace when the OpenAI call fails` |
+| "Real-time cost telemetry" | Cost was priced from `response.model`, a dated snapshot id no alias matched, so every call fell back to gpt-4o rates — ~16x too high for gpt-4o-mini. Unit tests missed it because the mock echoed the alias. | Longest-prefix resolution against the *requested* model; `prices against the requested model, not the dated snapshot echoed back` |
+| ADR-3: the await "can never add latency to the call the host application is waiting on" | It could. The non-streaming path awaited `/resolve` before returning, with no timeout, so a hanging backend hung the caller indefinitely. | Emission from the promise continuation plus `AbortSignal` timeouts; `returns to the caller without waiting for a hanging backend` |
+| ADR-1: polls are "jittered to avoid a synchronized thundering-herd" | `setInterval` with a fixed period. There was no jitter. | Self-rescheduling timeout with a jitter ratio |
+| "Deterministic A/B testing" | Nothing could stop a test, so a second demo run left two active tests for one prompt and the SDK cache picked whichever response arrived last. | `PATCH /api/ab-tests/[id]`, a 409 on a duplicate active test, and `allows exactly one active test when creates race` |
+| "The winner of each metric is highlighted automatically" | The winner was whichever average was lower, at any sample size. Three requests per arm produced a confident badge on noise. | ADR-6's significance gate; `refuses to call a winner below the minimum sample size` |
+| "Set `PROMPTWATCH_API_KEY` in `.env`" for a shared deployment | Compose never forwarded the variable, so following the instruction left auth disabled while appearing to enable it. | Explicit pass-through in `docker-compose.yml`; `docker-compose.prod.yml` refuses to start without it |
+| CI green | The lint step caught its own failure and echoed "Lint skipped", exiting 0. There was no linter in the repo at all. | ESLint plus a CI pipeline where every step can fail the build |
+| The advisory lock protects version assignment | It did, but it also serialised *every* resolve for a prompt name — including the unchanged-prompt case that runs on every LLM call — and Prisma's 2s transaction-start default turned contention into P2028 failures. Nothing tested it, so neither was visible. | A lock-free fast path for unchanged prompts, a single-statement insert under the lock, and `assigns unique consecutive versions under concurrent writes` |
+
+The last row is the one worth dwelling on: it was found by writing the database tests, not
+by reading the code. Two of these bugs existed *because* the test suite ran without a
+database and the mocks were kinder than reality.
