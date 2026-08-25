@@ -25,6 +25,9 @@ them. So prompts get changed on vibes, and reverted on vibes.
    winner is declared **only** when the difference survives a significance test.
 4. **Ships.** Promoting the winner releases it to running SDK clients on their next poll.
    Rollback is one click.
+5. **Watches the ship.** The live release is continuously compared against the version it
+   replaced, so a bad prompt is caught rather than discovered — with unattended rollback
+   available, opt-in, behind a stricter bar than the alert.
 
 ```
 Quality Score   54.0% (n=87)   78.1% (n=73)  winner    p = 0.001
@@ -108,6 +111,7 @@ By default the demo runs against a deterministic mock client, so no API key is r
 | `npm run typecheck` | `tsc --noEmit` for the SDK and the web app |
 | `npm run build` | Builds the SDK, then the Next.js app |
 | `npm run retention --workspace=apps/web` | Prunes telemetry past the retention window |
+| `npm run watch:releases --workspace=apps/web` | Compares each live release against the version it replaced |
 
 CI runs all of these plus a production image build against a throwaway Postgres service,
 and every one of them can fail the build.
@@ -254,6 +258,53 @@ itself after retention has deleted the traces behind it.
 `npm run demo` walks the entire loop, ending with a client whose own code contains the
 losing prompt sending the promoted one — and the same client, pointed at a dead backend,
 silently sending its own text again.
+
+## Watching a release
+
+Shipping a prompt is where this stops being an observability tool and starts changing what
+production says to users. Noticing a bad change is therefore its job, not yours:
+
+```bash
+npm run watch:releases --workspace=apps/web
+```
+
+```
+✗ support-agent v4 (release #12) — REGRESSION vs v3
+    ! quality: 78.1% → 61.4% (p = 0.004)
+      errorRate: 0.5% → 0.6% (p = 0.812)
+      latency: 280ms → 291ms (p = 0.205)
+    → not reverting automatically: auto-rollback is disabled
+```
+
+It exits non-zero when it finds one, so a scheduler can alert on it:
+
+```
+*/15 * * * *  docker compose exec -T web npm run watch:releases
+```
+
+The comparison reuses the A/B machinery unchanged — Welch's t-test, the two-proportion
+z-test, the same 30-per-side gate. Only the axis differs: the window *before* the release
+versus everything after. That "before" window is bounded on both sides, so a long-lived
+prompt is compared against the hours it was actually replaced in rather than against its
+own best month.
+
+**Unattended rollback is opt-in** and deliberately harder to trigger than the alert:
+
+```bash
+PROMPTWATCH_AUTO_ROLLBACK=true
+PROMPTWATCH_AUTO_ROLLBACK_MIN_SAMPLES=100   # vs 30 to merely report
+```
+
+Only quality and error-rate regressions qualify. **Latency is reported and never
+auto-reverted** — a slower prompt that answers better is often the right trade, and a
+machine that silently undoes that judgement is worse than one that stays quiet. When it does
+act it writes an ordinary release with actor `auto-rollback` and the numbers that justified
+it, so undoing *it* is the same one click as any other rollback.
+
+[ADR-14](docs/adr/014-detecting-a-bad-release-and-when-a-machine-may-undo-it.md) covers why
+detection and action are separate decisions, and states plainly what this cannot do: the
+comparison is observational, so it is a regression alarm rather than proof the new prompt
+caused the drop.
 
 ## Deploying
 
@@ -420,5 +471,6 @@ wrong. Each is a standalone document under [`docs/adr/`](docs/adr).
 | 11 | [The Registry Serves Prompts; the Code Still Owns Them](docs/adr/011-the-registry-serves-prompts-the-code-still-owns-them.md) | A released version overrides the prompt in your code, but never replaces it — the local text stays the contract and the fallback, so a backend outage cannot change application behaviour. |
 | 12 | [One Instrumentation, Two OpenAI APIs](docs/adr/012-one-instrumentation-two-openai-apis.md) | Chat Completions and the Responses API share every behaviour that matters; only their four genuine differences live in an adapter, and unverified shapes degrade rather than break. |
 | 13 | [Attribution Is Not Authentication](docs/adr/013-attribution-is-not-authentication.md) | Releases record a self-declared name, never a verified one — and ADR-4's threat model, written when the dashboard was read-only, is restated now that it can change production. |
+| 14 | [Detecting a Bad Release, and When a Machine May Undo It](docs/adr/014-detecting-a-bad-release-and-when-a-machine-may-undo-it.md) | Every live release is compared against the version it replaced; reverting unattended is opt-in, needs more evidence than reporting does, and never happens on latency alone. |
 
 **[ADR-9](docs/adr/009-corrections.md) is the one to read first** if you are evaluating this repo: it lists every claim the project made and did not keep, what was actually true, and the test that now guards it.

@@ -820,3 +820,24 @@ code {
   border-color: var(--pw-primary);
   color: var(--pw-primary);
 }
+
+/* ---------- Live release health ---------- */
+
+.pw-health {
+  margin-top: var(--pw-space-5);
+  padding: var(--pw-space-4);
+  border: 1px solid var(--pw-border);
+  border-radius: var(--pw-radius-sm);
+  background: var(--pw-surface-2);
+}
+
+/* A regression should be visible before the numbers are read. */
+.pw-health--bad {
+  border-color: rgba(249, 112, 127, 0.45);
+  background: rgba(249, 112, 127, 0.05);
+}
+
+.pw-health .pw-alert {
+  margin: var(--pw-space-3) 0;
+  display: block;
+}

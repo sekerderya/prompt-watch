@@ -5,6 +5,7 @@ import EmptyState from "../components/EmptyState";
 import PromptDiff from "../components/PromptDiff";
 import RangePicker, { DEFAULT_RANGE_DAYS } from "../components/RangePicker";
 import TraceList from "../components/TraceList";
+import ReleaseHealth from "../components/ReleaseHealth";
 import { promptForOperator } from "@/lib/operator";
 
 interface PromptSummary {
@@ -380,6 +381,8 @@ export default function PromptsPage() {
                   code, which is also the fallback if this backend is unreachable.
                 </p>
               )}
+
+              {liveRelease !== null && <ReleaseHealth releaseId={liveRelease.id} />}
 
               {releases.length > 0 && (
                 <div className="pw-diff-block">

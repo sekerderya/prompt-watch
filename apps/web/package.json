@@ -8,7 +8,8 @@
     "start": "next start",
     "test": "vitest run",
     "test:db": "prisma migrate deploy --schema=./prisma/schema.prisma && vitest run --config vitest.db.config.mts",
-    "retention": "tsx scripts/retention.ts"
+    "retention": "tsx scripts/retention.ts",
+    "watch:releases": "tsx scripts/watchReleases.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
