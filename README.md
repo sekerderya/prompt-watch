@@ -11,7 +11,7 @@
 
 PromptWatch wraps your existing OpenAI client with a single function call. From that point on, every system prompt is automatically hashed and versioned, requests can be routed through a live A/B test with sticky per-user bucketing, and every call's cost, latency, and outcome streams to a self-hosted dashboard — without ever touching your users' data, and without PromptWatch's own backend ever sitting on the path of your model call.
 
-Cost and latency come for free. Whether one prompt produces *better answers* is something only your application can know, so it reports a score per call and the dashboard compares variants on it — declaring a winner only when the difference is statistically significant.
+Cost and latency come for free. Whether one prompt produces *better answers* is something only your application can know, so it reports a score per call and the dashboard compares variants on it — declaring a winner only when the difference is statistically significant. Then it ships that winner: promoting a version releases it to running SDK instances without a deploy, while the prompt in your code stays the fallback if PromptWatch is unreachable.
 
 `wrapOpenAI` returns a proxy; the client you pass in is left untouched, and wrapping the same client twice is a no-op rather than a source of duplicate traces.
 
@@ -33,8 +33,8 @@ Then open **http://localhost:3000**. Three pages, updating as the demo runs:
 | Page | What it shows |
 | --- | --- |
 | **Dashboard** | Cost, request volume, error rate and reported quality across every prompt |
-| **Prompts** | Every tracked prompt, its version history, a word-level diff between any two versions, per-version metrics, and a breakdown of what its failures actually were |
-| **A/B Tests** | Variant comparison with a winner declared only when the difference is statistically significant |
+| **Prompts** | Every tracked prompt, its version history, a word-level diff between any two versions, per-version metrics, a breakdown of what its failures actually were, and which version is released (with one-click rollback) |
+| **A/B Tests** | Variant comparison with a winner declared only when the difference is statistically significant — and a button to ship it |
 
 ### Step-by-step
 
@@ -122,6 +122,57 @@ Avg. Cost       $0.000035         $0.000034               no significant differe
 
 — which is the point of the whole feature: the operational metrics say the two prompts are
 indistinguishable, and only the outcome signal reveals that one is meaningfully better.
+
+## Shipping a winner
+
+An A/B test that ends in "variant B is better" used to leave you editing a string by hand.
+Promoting the winner releases that version instead: running SDK clients pick it up on their
+next poll, with no deploy.
+
+Opt in per client, because sending text the caller did not write is an application's
+decision rather than a side effect of upgrading the SDK:
+
+```ts
+const client = wrapOpenAI(openai, {
+  promptName: "support-agent",
+  backendUrl,
+  useRegistry: true,
+  // Still required, still authoritative. The registry overrides this text;
+  // it never replaces it.
+});
+
+await client.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [
+    { role: "system", content: PROMPT_IN_YOUR_CODE },
+    { role: "user", content: question },
+  ],
+});
+```
+
+What actually gets sent, highest precedence first:
+
+1. **an active A/B test variant** — an experiment outranks a release, or it would be
+   measuring something other than what it was set up to measure;
+2. **the released version** from the registry;
+3. **the prompt in your code** — including whenever the registry has nothing to say, and
+   whenever PromptWatch is unreachable.
+
+That third line is the whole reason this is safe to switch on. Serving prompts remotely
+would otherwise make an observability tool a hard runtime dependency, which is precisely
+what [ADR-3](docs/adr/003-non-blocking-fire-and-forget-telemetry.md) forbids. Reads come
+from a polled in-memory cache, a failed poll keeps the last known-good value, and a cache
+that never reached the backend holds nothing at all. `onTrace` reports which of the three
+was used via `promptSource`, so this is assertable rather than assumed.
+
+Releases are append-only: the live version is simply the newest row, so rollback is an
+ordinary insert and the history can never disagree with the pointer. Promotion recomputes
+the comparison server-side and stores it on the release, so the decision still explains
+itself after retention has deleted the traces behind it.
+
+`npm run demo` walks the entire loop, ending with a client whose own code contains the
+losing prompt sending the promoted one — and the same client, pointed at a dead backend,
+silently sending its own text again.
 
 ## Deploying
 
@@ -277,5 +328,6 @@ wrong. Each is a standalone document under [`docs/adr/`](docs/adr).
 | 8 | [Outcomes Keyed on a Client-Generated Id, Not a Foreign Key](docs/adr/008-outcomes-keyed-on-a-client-generated-id-not-a-foreign-key.md) | The SDK generates a UUID per call, hands it to the host application through `onTrace`, and stamps it on the trace. Outcomes are stored in their… |
 | 9 | [Corrections](docs/adr/009-corrections.md) | Every claim this project made and did not keep, what was actually true, and the test that now guards it. |
 | 10 | [No Node Built-Ins in the SDK](docs/adr/010-no-node-built-ins-in-the-sdk.md) | The SDK imports nothing from `node:*`, so it runs on edge runtimes, Deno, Bun and the browser — the environments its own README recommended. |
+| 11 | [The Registry Serves Prompts; the Code Still Owns Them](docs/adr/011-the-registry-serves-prompts-the-code-still-owns-them.md) | A released version overrides the prompt in your code, but never replaces it — the local text stays the contract and the fallback, so a backend outage cannot change application behaviour. |
 
 **[ADR-9](docs/adr/009-corrections.md) is the one to read first** if you are evaluating this repo: it lists every claim the project made and did not keep, what was actually true, and the test that now guards it.

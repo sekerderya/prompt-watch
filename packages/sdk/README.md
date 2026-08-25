@@ -129,6 +129,38 @@ await outcomes.record(traceId, { score: 1, label: "resolved" });
 `1`, a 1-5 star rating is `(stars - 1) / 4`. Recording is idempotent per trace id, and an
 outcome may safely arrive before the trace it belongs to.
 
+## Serving released prompts
+
+A version promoted in the dashboard can be served to running clients without a deploy.
+Opt in per client:
+
+```ts
+const client = wrapOpenAI(openai, {
+  promptName: "support-agent",
+  backendUrl,
+  useRegistry: true,
+});
+```
+
+The system prompt you pass to `create()` is still required and still authoritative. The
+registry *overrides* it; it never replaces it. Precedence is: active A/B variant, then the
+released version, then your own text — and your own text is what gets sent whenever nothing
+is released or the backend is unreachable. That fallback is what keeps this from turning
+PromptWatch into a runtime dependency.
+
+`onTrace` reports which one was used:
+
+```ts
+onTrace: (handle) => {
+  handle.promptSource; // "ab-test" | "registry" | "local"
+  handle.releaseId;    // set when promptSource is "registry"
+};
+```
+
+Releases propagate on the next poll (~30s by default). Your local text is still registered
+in the background even while a release overrides it, so a prompt edited in a new deploy
+still shows up as a version you can promote.
+
 ## A/B testing & distinct ids
 
 `wrapOpenAI` polls `/api/ab-tests/active` (via `ABCache`) and, when an active test exists
@@ -219,6 +251,7 @@ wrapOpenAI(openai, {
 | Export | Purpose |
 | --- | --- |
 | `wrapOpenAI(client, options)` | Returns a traced proxy over an OpenAI client |
+| `PromptCache` | Caches released prompt versions for `useRegistry` clients |
 | `createPromptWatch(options)` | Shared cache/telemetry/outcomes for several prompts |
 | `OutcomeClient` | Records the quality score for a traced call |
 | `TelemetryClient` | Trace queue; `flush()`, `close()`, `stats()` |
