@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
 
 import { ABCache } from "./abTesting";
+import { PromptCache } from "./promptRegistry";
 import { OutcomeClient } from "./outcomes";
 import { TelemetryClient, type TelemetryOptions } from "./telemetry";
 import { wrapOpenAI, type TraceHandle } from "./wrapOpenAI";
@@ -15,6 +16,11 @@ export interface PromptWatchOptions {
   pollIntervalMs?: number;
   telemetry?: TelemetryOptions;
   pricing?: Record<string, ModelPricing>;
+  /**
+   * Serve prompt versions promoted in the dashboard instead of the text in this
+   * code. Off by default; see ADR-11 for why that default is deliberate.
+   */
+  useRegistry?: boolean;
   onError?: (
     error: unknown,
     context: { operation: "resolve" | "telemetry" | "outcome" }
@@ -33,6 +39,8 @@ export interface PromptWatch {
   outcomes: OutcomeClient;
   telemetry: TelemetryClient;
   cache: ABCache;
+  /** Undefined unless `useRegistry` was enabled. */
+  promptCache?: PromptCache;
   /** Drains buffered telemetry. Call before a short-lived process exits. */
   flush(): Promise<void>;
   /** Flushes, then stops the A/B poll. Safe to call more than once. */
@@ -81,6 +89,15 @@ export function createPromptWatch(options: PromptWatchOptions): PromptWatch {
       (onError ? (err) => onError(err, { operation: "telemetry" }) : undefined),
   });
 
+  let promptCache: PromptCache | undefined;
+  if (options.useRegistry) {
+    promptCache = new PromptCache();
+    promptCache.start(backendUrl, options.pollIntervalMs ?? 30000, apiKey, {
+      requestTimeoutMs: backendTimeoutMs,
+      onError: onError ? (err) => onError(err, { operation: "resolve" }) : undefined,
+    });
+  }
+
   const outcomes = new OutcomeClient(backendUrl, apiKey, {
     requestTimeoutMs: backendTimeoutMs,
     onError: onError ? (err) => onError(err, { operation: "outcome" }) : undefined,
@@ -97,6 +114,8 @@ export function createPromptWatch(options: PromptWatchOptions): PromptWatch {
         backendTimeoutMs,
         pricing: options.pricing,
         cache,
+        promptCache,
+        useRegistry: options.useRegistry,
         telemetry,
         onError,
       });
@@ -104,10 +123,12 @@ export function createPromptWatch(options: PromptWatchOptions): PromptWatch {
     outcomes,
     telemetry,
     cache,
+    promptCache,
     flush: () => telemetry.flush(),
     async close() {
       await telemetry.close();
       cache.stop();
+      promptCache?.stop();
     },
   };
 }

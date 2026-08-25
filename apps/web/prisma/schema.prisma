@@ -12,6 +12,16 @@ enum ABTestStatus {
   STOPPED
 }
 
+/// How a version came to be the one served.
+enum ReleaseSource {
+  /// Promoted because it won an A/B test at significance.
+  AB_TEST_WINNER
+  /// Promoted by hand from the Prompts page.
+  MANUAL
+  /// Promoted back to an earlier version after a regression.
+  ROLLBACK
+}
+
 enum TraceStatus {
   SUCCESS
   ERROR
@@ -41,9 +51,10 @@ model Prompt {
   promptHash String   @map("prompt_hash")
   createdAt  DateTime @default(now()) @map("created_at")
 
-  abTestsAsA ABTest[] @relation("VariantA")
-  abTestsAsB ABTest[] @relation("VariantB")
+  abTestsAsA ABTest[]      @relation("VariantA")
+  abTestsAsB ABTest[]      @relation("VariantB")
   traces     Trace[]
+  releases   PromptRelease[]
 
   @@unique([name, promptHash])
   @@unique([name, version])
@@ -128,4 +139,34 @@ model Outcome {
 
   @@index([label])
   @@map("outcomes")
+}
+
+/// An append-only log of which version of a prompt is served.
+///
+/// There is no `isCurrent` flag. The live release for a prompt is simply its
+/// most recent row, which means the pointer can never drift out of sync with
+/// the history, and a rollback is an ordinary insert rather than a mutation of
+/// two rows that must agree.
+///
+/// Nothing here is required for PromptWatch to observe an application. A prompt
+/// with no releases is served entirely from the caller's own code; a release
+/// only overrides it for SDK instances that opted in (ADR-11).
+model PromptRelease {
+  id         Int           @id @default(autoincrement())
+  promptName String        @map("prompt_name")
+  prompt     Prompt        @relation(fields: [promptId], references: [id])
+  promptId   Int           @map("prompt_id")
+  source     ReleaseSource
+  /// Free-text justification shown in the release history.
+  reason     String?
+  /// The test this decision came from, when it came from one.
+  abTestId   Int?          @map("ab_test_id")
+  /// Snapshot of the comparison at the moment of promotion, so the record still
+  /// explains itself after the underlying traces have aged out (retention).
+  evidence   Json?
+  createdAt  DateTime      @default(now()) @map("created_at")
+
+  // Serves "what is live for this prompt" — the SDK's poll and every UI badge.
+  @@index([promptName, createdAt])
+  @@map("prompt_releases")
 }

@@ -7,6 +7,7 @@ import { TelemetryClient } from "./telemetry";
 import { wrapStream, type StreamOutcome } from "./streamWrapper";
 import { requestJson } from "./http";
 import { randomId } from "./random";
+import { PromptCache, type PublishedPrompt } from "./promptRegistry";
 import { classifyError, type TraceErrorType } from "./errorType";
 
 /**
@@ -19,6 +20,14 @@ export interface TraceHandle {
   promptName: string;
   abTestId?: number;
   variant?: "A" | "B";
+  /**
+   * Where the prompt actually sent to the model came from. "local" means the
+   * text the caller passed in - which is also what a backend outage falls back
+   * to, so this is the field to assert on when testing that behaviour.
+   */
+  promptSource: "local" | "registry" | "ab-test";
+  /** Released version served, when promptSource is "registry". */
+  releaseId?: number;
 }
 
 export interface WrapOpenAIOptions {
@@ -26,6 +35,19 @@ export interface WrapOpenAIOptions {
   backendUrl: string;
   getDistinctId?: () => string | undefined;
   cache?: ABCache;
+  /**
+   * Serve the version promoted in the dashboard instead of the prompt in this
+   * code, when one exists.
+   *
+   * Off by default, and deliberately so: substituting text the caller did not
+   * write is a decision an application makes, never a side effect of upgrading
+   * the SDK. With it on, the prompt passed to `create()` still acts as the
+   * contract and the fallback - if the backend is unreachable, or nothing has
+   * been promoted, that text is what gets sent (ADR-11).
+   */
+  useRegistry?: boolean;
+  /** Share one registry cache across several wrapped clients. */
+  promptCache?: PromptCache;
   telemetry?: TelemetryClient;
   apiKey?: string;
   /** Timeout for PromptWatch's own backend calls. Never applied to the OpenAI call. */
@@ -67,6 +89,7 @@ type CreateFn = OpenAI.Chat.Completions["create"];
 const WRAPPED = Symbol.for("promptwatch.wrapped");
 
 const defaultCaches = new Map<string, ABCache>();
+const defaultPromptCaches = new Map<string, PromptCache>();
 
 function getOrCreateCache(backendUrl: string, apiKey?: string): ABCache {
   const cacheKey = apiKey ? `${backendUrl}:${apiKey}` : backendUrl;
@@ -78,10 +101,20 @@ function getOrCreateCache(backendUrl: string, apiKey?: string): ABCache {
   return cache;
 }
 
+function getOrCreatePromptCache(backendUrl: string, apiKey?: string): PromptCache {
+  const cacheKey = apiKey ? `${backendUrl}:${apiKey}` : backendUrl;
+  const existing = defaultPromptCaches.get(cacheKey);
+  if (existing) return existing;
+  const cache = new PromptCache();
+  cache.start(backendUrl, 30000, apiKey);
+  defaultPromptCaches.set(cacheKey, cache);
+  return cache;
+}
+
 interface TraceMeta {
   promptId: number;
-  abTestId: number;
-  variant: string;
+  abTestId: number | null;
+  variant: string | null;
 }
 
 interface TraceMetrics {
@@ -156,6 +189,9 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
     options;
   const pricingOverrides = options.pricing;
   const cache = options.cache ?? getOrCreateCache(backendUrl, apiKey);
+  const promptCache = options.useRegistry
+    ? options.promptCache ?? getOrCreatePromptCache(backendUrl, apiKey)
+    : options.promptCache;
   const telemetry =
     options.telemetry ??
     new TelemetryClient(backendUrl, apiKey, {
@@ -188,11 +224,23 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
 
     const activeTest: ABTestConfig | undefined =
       systemText !== null ? cache.get(promptName) : undefined;
+    const published: PublishedPrompt | undefined =
+      !activeTest && systemText !== null ? promptCache?.get(promptName) : undefined;
 
     let resolvePromise: Promise<ResolveResponse | null> | null = null;
     let requestBody = body;
     let traceMeta: TraceMeta | null = null;
+    let promptSource: "local" | "registry" | "ab-test" = "local";
 
+    const substitute = (text: string) => ({
+      ...body,
+      messages: messages.map((m, i) => (i === systemIndex ? { ...m, content: text } : m)),
+    });
+
+    // Precedence: a running experiment outranks a release, and a release
+    // outranks the caller's own text. An A/B test is a deliberate, temporary
+    // override; letting a release win over one would make the test measure
+    // something other than what it was set up to measure.
     if (activeTest) {
       const assignment = assignVariant(activeTest, getDistinctId?.());
       traceMeta = {
@@ -200,12 +248,24 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
         abTestId: activeTest.id,
         variant: assignment.variant,
       };
-      requestBody = {
-        ...body,
-        messages: messages.map((m, i) =>
-          i === systemIndex ? { ...m, content: assignment.promptText } : m
-        ),
-      };
+      requestBody = substitute(assignment.promptText);
+      promptSource = "ab-test";
+    } else if (published) {
+      // A released version is already a known prompt id, so the trace needs no
+      // resolve round trip to be attributed.
+      traceMeta = { promptId: published.promptId, abTestId: null, variant: null };
+      requestBody = substitute(published.promptText);
+      promptSource = "registry";
+
+      // The caller's own text still has to reach the registry, or a prompt
+      // edited in a new deploy could never appear as a version to promote and
+      // the registry would freeze on whatever was released first. Fired and
+      // forgotten; its id is not used for this trace.
+      // (`published` is only set when systemText is non-null; restated for the
+      // type checker, which cannot follow that across the two computations.)
+      if (systemText !== null && systemText !== published.promptText) {
+        void resolvePrompt(systemText);
+      }
     } else if (systemText !== null) {
       resolvePromise = resolvePrompt(systemText);
     }
@@ -219,8 +279,10 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
         onTrace({
           traceId: clientTraceId,
           promptName,
-          abTestId: traceMeta?.abTestId,
-          variant: traceMeta?.variant as "A" | "B" | undefined,
+          abTestId: traceMeta?.abTestId ?? undefined,
+          variant: (traceMeta?.variant ?? undefined) as "A" | "B" | undefined,
+          promptSource,
+          releaseId: published?.releaseId,
         });
       } catch (err) {
         // A throwing callback is the host application's bug, not a reason to
@@ -242,8 +304,8 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
       if (traceMeta) {
         telemetry.send({
           promptId: traceMeta.promptId,
-          abTestId: traceMeta.abTestId,
-          variant: traceMeta.variant,
+          abTestId: traceMeta.abTestId ?? undefined,
+          variant: traceMeta.variant ?? undefined,
           clientTraceId,
           ...metrics,
         });
