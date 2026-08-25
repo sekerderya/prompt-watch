@@ -11,6 +11,11 @@ export interface TracePayload {
   /** True when costUsd is a fallback guess because the model was not in the pricing table. */
   pricingUnknown?: boolean;
   status: "SUCCESS" | "ERROR";
+  /**
+   * Client-generated id for this call, handed to the host application through
+   * `onTrace` so it can attach an outcome to the same call later.
+   */
+  clientTraceId?: string;
 }
 
 export interface TelemetryOptions {

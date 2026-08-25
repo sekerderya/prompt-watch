@@ -15,6 +15,7 @@ const WAIT_TIMEOUT = 5000;
 
 interface TraceBody {
   promptId: number;
+  clientTraceId?: string;
   abTestId?: number;
   variant?: string;
   latencyMs: number;
@@ -456,6 +457,126 @@ describe("wrapOpenAI", () => {
       await waitFor(() => traces.length > 0);
       await new Promise((r) => setTimeout(r, 150));
       expect(traces).toHaveLength(1);
+    });
+
+    it("fires onTrace synchronously, before create() returns its promise", async () => {
+      mockOpenAICompletions();
+      mockResolve();
+      mockTrace();
+
+      const handles: any[] = [];
+      const client = wrapOpenAI(new OpenAI({ apiKey: "test-key" }), {
+        promptName: "support-bot",
+        backendUrl: BACKEND,
+        cache: new ABCache(),
+        telemetry: new TelemetryClient(BACKEND, undefined, { maxRetries: 0 }),
+        onTrace: (handle) => handles.push(handle),
+      });
+
+      const pending = client.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "system", content: SYSTEM_TEXT }],
+      });
+
+      // Callers rely on this: the id must be readable next to the call site,
+      // before awaiting, so it can be captured under concurrency.
+      expect(handles).toHaveLength(1);
+      expect(handles[0].traceId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(handles[0].promptName).toBe("support-bot");
+
+      await pending;
+      await waitFor(() => traces.length > 0);
+    });
+
+    it("reports the assigned variant through onTrace", async () => {
+      const cache = new ABCache();
+      mockActiveTests([
+        {
+          id: 77,
+          promptName: "support-bot",
+          variantAId: 1,
+          variantAText: "A TEXT",
+          variantBId: 2,
+          variantBText: "B TEXT",
+          splitPercent: 50,
+        },
+      ]);
+      cache.start(BACKEND, 60000);
+      await waitFor(() => cache.get("support-bot") !== undefined);
+      mockOpenAICompletions();
+      mockTrace();
+
+      const handles: any[] = [];
+      const client = wrapOpenAI(new OpenAI({ apiKey: "test-key" }), {
+        promptName: "support-bot",
+        backendUrl: BACKEND,
+        cache,
+        telemetry: new TelemetryClient(BACKEND, undefined, { maxRetries: 0 }),
+        getDistinctId: () => "user-1",
+        onTrace: (handle) => handles.push(handle),
+      });
+
+      await client.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "system", content: SYSTEM_TEXT }],
+      });
+
+      await waitFor(() => traces.length > 0);
+      expect(handles[0].abTestId).toBe(77);
+      expect(handles[0].variant).toMatch(/^[AB]$/);
+      cache.stop();
+    });
+
+    it("puts the same trace id on the emitted trace", async () => {
+      mockOpenAICompletions();
+      mockResolve();
+      mockTrace();
+
+      let handleId: string | undefined;
+      const client = wrapOpenAI(new OpenAI({ apiKey: "test-key" }), {
+        promptName: "support-bot",
+        backendUrl: BACKEND,
+        cache: new ABCache(),
+        telemetry: new TelemetryClient(BACKEND, undefined, { maxRetries: 0 }),
+        onTrace: (handle) => {
+          handleId = handle.traceId;
+        },
+      });
+
+      await client.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "system", content: SYSTEM_TEXT }],
+      });
+
+      await waitFor(() => traces.length > 0);
+      // Without this the outcome could never be joined back to the trace.
+      expect(traces.map((t) => t.clientTraceId)).toContain(handleId);
+    });
+
+    it("survives an onTrace callback that throws", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockOpenAICompletions();
+      mockResolve();
+      mockTrace();
+
+      const client = wrapOpenAI(new OpenAI({ apiKey: "test-key" }), {
+        promptName: "support-bot",
+        backendUrl: BACKEND,
+        cache: new ABCache(),
+        telemetry: new TelemetryClient(BACKEND, undefined, { maxRetries: 0 }),
+        onTrace: () => {
+          throw new Error("host application bug");
+        },
+      });
+
+      const res = await client.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "system", content: SYSTEM_TEXT }],
+      });
+
+      expect(res.choices[0]?.message.content).toBe("Here is your answer.");
+      expect(consoleError).toHaveBeenCalled();
+      await waitFor(() => traces.length > 0);
     });
 
     it("passes non-chat properties through to the underlying client", () => {

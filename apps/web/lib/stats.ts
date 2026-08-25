@@ -109,27 +109,38 @@ export type Verdict =
   | { kind: "inconclusive"; pValue: number }
   | { kind: "winner"; winner: "A" | "B"; pValue: number };
 
+export interface VerdictOptions {
+  /** Traces required per arm before any verdict is reported. */
+  minSamples?: number;
+  /**
+   * Direction of "better". Latency, cost and error rate are lower-is-better;
+   * the quality score reported by the host application is higher-is-better.
+   */
+  higherIsBetter?: boolean;
+}
+
 /**
  * Turns a test result into what the UI is allowed to claim.
  *
- * `lowerIsBetter` covers latency, cost and error rate — every metric this tool
- * currently tracks is one where less is better.
+ * Nothing is called a winner until both arms clear `minSamples` *and* the
+ * difference survives a significance test. Everything short of that is reported
+ * as "not enough data" or "no significant difference" rather than as a result.
  */
 export function decideVerdict(
   result: TestResult | null,
   nA: number,
   nB: number,
-  minSamples: number = MIN_SAMPLES_PER_VARIANT
+  options: VerdictOptions = {}
 ): Verdict {
+  const minSamples = options.minSamples ?? MIN_SAMPLES_PER_VARIANT;
+
   if (nA < minSamples || nB < minSamples) {
     return { kind: "insufficient-data", needed: minSamples, haveA: nA, haveB: nB };
   }
   if (!result) return { kind: "inconclusive", pValue: 1 };
   if (!result.significant) return { kind: "inconclusive", pValue: result.pValue };
-  // difference is (A - B); a negative difference means A is lower, i.e. better.
-  return {
-    kind: "winner",
-    winner: result.difference < 0 ? "A" : "B",
-    pValue: result.pValue,
-  };
+
+  // difference is (A - B). Lower-is-better metrics favour the negative side.
+  const aWins = options.higherIsBetter ? result.difference > 0 : result.difference < 0;
+  return { kind: "winner", winner: aWins ? "A" : "B", pValue: result.pValue };
 }

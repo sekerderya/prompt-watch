@@ -27,6 +27,7 @@ import {
   wrapOpenAI,
   ABCache,
   TelemetryClient,
+  OutcomeClient,
   assignVariant,
   sha256,
   type ABTestConfig,
@@ -47,6 +48,14 @@ const PROMPT_V2 =
 const SIMULATED_USERS = ["alice_42", "bob_17", "carol_08", "dave_99", "erin_31", "frank_05"];
 
 const SDK_API_KEY = process.env.PROMPTWATCH_API_KEY;
+
+interface VariantRow {
+  variant: string | null;
+  avgLatency: number | null;
+  avgCost: number | null;
+  avgScore: number | null;
+  scored: number;
+}
 
 function authHeaders(): Record<string, string> {
   return {
@@ -215,8 +224,13 @@ async function main(): Promise<void> {
   // An explicit telemetry client so the script can flush buffered traces before
   // exiting; a short-lived process would otherwise drop whatever is still queued.
   const telemetry = new TelemetryClient(BACKEND_URL, SDK_API_KEY);
+  const outcomes = new OutcomeClient(BACKEND_URL, SDK_API_KEY);
 
   let currentUser: string | undefined;
+  // onTrace runs synchronously inside create(), before the first await, so the
+  // handle can be read immediately after the call and stays correct even when
+  // many calls are in flight at once.
+  let pendingTrace: { traceId: string; variant?: "A" | "B" } | undefined;
   const client = wrapOpenAI(rawClient, {
     promptName: PROMPT_NAME,
     backendUrl: BACKEND_URL,
@@ -224,7 +238,28 @@ async function main(): Promise<void> {
     telemetry,
     getDistinctId: () => currentUser,
     apiKey: SDK_API_KEY,
+    onTrace: (handle) => {
+      pendingTrace = { traceId: handle.traceId, variant: handle.variant };
+    },
   });
+
+  /** Starts one call and hands back the trace handle captured for it. */
+  function tracedCall(userId: string): {
+    trace: { traceId: string; variant?: "A" | "B" };
+    done: Promise<unknown>;
+  } {
+    currentUser = userId;
+    pendingTrace = undefined;
+    const done = client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: PROMPT_V1 },
+        { role: "user", content: USER_QUESTION },
+      ],
+    });
+    if (!pendingTrace) throw new Error("onTrace did not fire synchronously");
+    return { trace: pendingTrace, done };
+  }
 
   line();
   console.log("1️⃣  AUTOMATIC VERSIONING");
@@ -335,7 +370,65 @@ async function main(): Promise<void> {
   }
 
   line();
-  console.log("4️⃣  STREAMING SUPPORT");
+  console.log("4️⃣  OUTCOME-DRIVEN QUALITY COMPARISON");
+  line();
+  console.log(
+    "→ Cost and latency come for free, but only the application knows whether an"
+  );
+  console.log("  answer was any good. Simulating real traffic that reports back:\n");
+
+  // Stand-in for whatever the real signal is: a thumbs-up, a resolved ticket, a
+  // grader's verdict. Here the friendlier variant genuinely satisfies more users.
+  const SUCCESS_RATE: Record<"A" | "B", number> = { A: 0.55, B: 0.78 };
+  const TRAFFIC = 160;
+  const CONCURRENCY = 20;
+
+  let recorded = 0;
+  for (let start = 0; start < TRAFFIC; start += CONCURRENCY) {
+    const batch = [];
+    for (let i = start; i < Math.min(start + CONCURRENCY, TRAFFIC); i++) {
+      const { trace, done } = tracedCall(`sim_user_${i}`);
+      batch.push({ trace, done });
+    }
+    await Promise.all(batch.map((b) => b.done));
+
+    const scored = batch
+      .filter((b) => b.trace.variant)
+      .map((b) => ({
+        traceId: b.trace.traceId,
+        score: Math.random() < SUCCESS_RATE[b.trace.variant as "A" | "B"] ? 1 : 0,
+        label: "resolved",
+      }));
+    if (await outcomes.recordMany(scored)) recorded += scored.length;
+    process.stdout.write(`
+   ${Math.min(start + CONCURRENCY, TRAFFIC)}/${TRAFFIC} calls, ${recorded} outcomes recorded`);
+  }
+  console.log("\n");
+
+  // Traces are batched; flush before asking the backend to aggregate them.
+  await telemetry.flush();
+
+  const comparison = await fetch(
+    `${BACKEND_URL}/api/metrics/ab-test-comparison?id=${createdTest.id}`,
+    { headers: authHeaders() }
+  ).then((r) => r.json());
+
+  for (const row of comparison as VariantRow[]) {
+    if (!row.variant) continue;
+    const quality = row.avgScore === null ? "n/a" : `${(row.avgScore * 100).toFixed(1)}%`;
+    console.log(
+      `   Variant ${row.variant}: quality ${quality.padStart(6)} ` +
+        `(${row.scored} scored) · ${Math.round(row.avgLatency ?? 0)}ms · ` +
+        `$${(row.avgCost ?? 0).toFixed(6)}/call`
+    );
+  }
+  console.log(
+    "\n   → The dashboard declares a winner only if this gap survives a" +
+      "\n     significance test at n ≥ 30 per variant. Open the A/B Tests page.\n"
+  );
+
+  line();
+  console.log("5️⃣  STREAMING SUPPORT");
   line();
   console.log("→ Making a stream:true call and consuming the chunks with for-await:");
   const streamParams = {
@@ -362,7 +455,7 @@ async function main(): Promise<void> {
   console.log(`   Total chunks received: ${chunkCount}\n`);
 
   line();
-  console.log("5️⃣  STOPPING THE TEST");
+  console.log("6️⃣  STOPPING THE TEST");
   line();
   // Leaving the test ACTIVE would make a second `npm run demo` collide with it:
   // the backend now rejects a second active test for the same prompt.
@@ -382,11 +475,12 @@ async function main(): Promise<void> {
   await telemetry.flush();
   demoCache.stop();
 
-  // versioning (2) + bucketing (6) + streaming (1)
-  const traceCount = 2 + SIMULATED_USERS.length + 1;
+  // versioning (2) + bucketing (6) + simulated traffic + streaming (1)
+  const traceCount = 2 + SIMULATED_USERS.length + TRAFFIC + 1;
   line();
   console.log(
-    `✅ DEMO COMPLETE — ${traceCount} traces, 2 prompt versions, 1 completed A/B test`
+    `✅ DEMO COMPLETE — ${traceCount} traces, ${recorded} outcomes, ` +
+      `2 prompt versions, 1 completed A/B test`
   );
   console.log(`👉 Dashboard: ${BACKEND_URL}`);
   line();

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 
 /** Guards against a single request trying to insert an unbounded number of rows. */
 const MAX_BATCH_SIZE = 500;
+const MAX_TRACE_ID_LENGTH = 128;
 
 interface ParsedTrace {
   promptId: number;
@@ -15,6 +16,7 @@ interface ParsedTrace {
   costUsd: number;
   pricingUnknown: boolean;
   status: TraceStatus;
+  clientTraceId: string | null;
 }
 
 function parseTrace(raw: unknown): ParsedTrace | string {
@@ -31,6 +33,17 @@ function parseTrace(raw: unknown): ParsedTrace | string {
   }
   if (status !== "SUCCESS" && status !== "ERROR") return "status must be SUCCESS or ERROR";
 
+  // Optional: only SDK versions that support outcomes send one.
+  const clientTraceId = body.clientTraceId;
+  if (clientTraceId !== undefined && clientTraceId !== null) {
+    if (typeof clientTraceId !== "string" || clientTraceId === "") {
+      return "clientTraceId must be a non-empty string when present";
+    }
+    if (clientTraceId.length > MAX_TRACE_ID_LENGTH) {
+      return `clientTraceId must be at most ${MAX_TRACE_ID_LENGTH} characters`;
+    }
+  }
+
   const nonNegative = (value: unknown): number => {
     const n = typeof value === "number" && Number.isFinite(value) ? value : 0;
     return n < 0 ? 0 : n;
@@ -46,6 +59,8 @@ function parseTrace(raw: unknown): ParsedTrace | string {
     costUsd: nonNegative(body.costUsd),
     pricingUnknown: body.pricingUnknown === true,
     status: status as TraceStatus,
+    // Joins this trace to an outcome the host application reports separately.
+    clientTraceId: typeof clientTraceId === "string" ? clientTraceId : null,
   };
 }
 
@@ -84,7 +99,7 @@ export async function POST(request: NextRequest) {
       parsed.push(result);
     }
 
-    const { count } = await prisma.trace.createMany({ data: parsed });
+    const { count } = await prisma.trace.createMany({ data: parsed, skipDuplicates: true });
     return NextResponse.json({ created: count }, { status: 201 });
   } catch (error) {
     // A trace referencing a prompt that does not exist is a client mistake, not

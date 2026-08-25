@@ -21,6 +21,8 @@ interface SummaryRow {
   errors: number;
   /** Traces priced with the SDK's fallback rate because the model was unknown. */
   unpriced: number;
+  avgScore: number | null;
+  scored: number;
 }
 
 interface ChartRow {
@@ -97,6 +99,14 @@ export default function Home() {
   const totalUnpriced = rows.reduce((s, r) => s + (r.unpriced ?? 0), 0);
   const errorRate = totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0;
 
+  // Weighted by how many calls each day actually carried an outcome, so a day
+  // with two ratings does not count as much as a day with two hundred.
+  const totalScored = rows.reduce((s, r) => s + (r.scored ?? 0), 0);
+  const qualityScore =
+    totalScored > 0
+      ? rows.reduce((s, r) => s + (r.avgScore ?? 0) * (r.scored ?? 0), 0) / totalScored
+      : null;
+
   const chartRows: ChartRow[] = rows.map((r) => ({
     day: r.day,
     totalCost: r.totalCost,
@@ -137,6 +147,17 @@ export default function Home() {
           <span className="pw-label">Error Rate</span>
           <span className="pw-kpi__value">{errorRate.toFixed(1)}%</span>
           <span className="pw-subtle">of all requests</span>
+        </div>
+        <div className="pw-kpi">
+          <span className="pw-label">Quality Score</span>
+          <span className="pw-kpi__value">
+            {qualityScore === null ? "—" : `${(qualityScore * 100).toFixed(1)}%`}
+          </span>
+          <span className="pw-subtle">
+            {qualityScore === null
+              ? "no outcomes reported yet"
+              : `from ${totalScored.toLocaleString()} scored call(s)`}
+          </span>
         </div>
       </div>
 

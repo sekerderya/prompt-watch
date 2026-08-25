@@ -42,6 +42,9 @@ interface VariantMetrics {
   total: number;
   errors: number;
   unpriced: number;
+  avgScore: number | null;
+  sdScore: number | null;
+  scored: number;
 }
 
 function fmt(v: number | null | undefined, digits = 2): string {
@@ -81,6 +84,23 @@ function errorVerdict(a?: VariantMetrics, b?: VariantMetrics): Verdict {
     twoProportionZTest(a.errors, a.total, b.errors, b.total),
     a.total,
     b.total
+  );
+}
+
+/**
+ * The only metric here that reflects answer quality, and the only one where a
+ * higher number wins. Its sample size is the number of *scored* calls, not the
+ * number of calls: a variant with 500 requests and 4 ratings has four data
+ * points, and saying otherwise would be the same mistake this gate exists to
+ * prevent.
+ */
+function scoreVerdict(a?: VariantMetrics, b?: VariantMetrics): Verdict {
+  if (!a || !b) return { kind: "insufficient-data", needed: MIN_SAMPLES_PER_VARIANT, haveA: a?.scored ?? 0, haveB: b?.scored ?? 0 };
+  return decideVerdict(
+    welchTTest(sample(a.avgScore, a.sdScore, a.scored), sample(b.avgScore, b.sdScore, b.scored)),
+    a.scored,
+    b.scored,
+    { higherIsBetter: true }
   );
 }
 
@@ -237,6 +257,7 @@ export default function ABTestsPage() {
   const metricsA = metrics.find((m) => m.variant === "A");
   const metricsB = metrics.find((m) => m.variant === "B");
   const unpricedTotal = (metricsA?.unpriced ?? 0) + (metricsB?.unpriced ?? 0);
+  const scoredTotal = (metricsA?.scored ?? 0) + (metricsB?.scored ?? 0);
 
   // Creating a second active test for one prompt is rejected now, but rows
   // predating that rule can still be in the table. The SDK caches one test per
@@ -330,8 +351,9 @@ export default function ABTestsPage() {
         <div>
           <h1 className="pw-h1">A/B Tests</h1>
           <p className="pw-page-head__desc">
-            Compare two prompt versions side by side. A winner is declared only once both
-            variants have enough traffic for the difference to be statistically significant.
+            Compare two prompt versions on quality, cost, latency and errors. A winner is
+            declared only once both variants have enough traffic for the difference to be
+            statistically significant.
           </p>
         </div>
       </div>
@@ -441,6 +463,20 @@ export default function ABTestsPage() {
                       </thead>
                       <tbody>
                         <MetricRow
+                          label="Quality Score"
+                          verdict={scoreVerdict(metricsA, metricsB)}
+                          valueA={
+                            metricsA?.scored
+                              ? `${(metricsA.avgScore! * 100).toFixed(1)}% (n=${metricsA.scored})`
+                              : "not scored"
+                          }
+                          valueB={
+                            metricsB?.scored
+                              ? `${(metricsB.avgScore! * 100).toFixed(1)}% (n=${metricsB.scored})`
+                              : "not scored"
+                          }
+                        />
+                        <MetricRow
                           label="Avg. Latency"
                           verdict={latencyVerdict(metricsA, metricsB)}
                           valueA={`${fmt(metricsA?.avgLatency, 0)} ms`}
@@ -469,6 +505,16 @@ export default function ABTestsPage() {
                         </tr>
                       </tbody>
                     </table>
+
+                    {scoredTotal === 0 && (
+                      <p className="pw-alert pw-alert--warn">
+                        No outcomes recorded for this test. Cost and latency are measured
+                        automatically, but only your application knows whether an answer was
+                        any good — report it with{" "}
+                        <code>outcomes.record(traceId, {"{ score: 1 }"})</code> using the id from
+                        the SDK&apos;s <code>onTrace</code> callback.
+                      </p>
+                    )}
 
                     {unpricedTotal > 0 && (
                       <p className="pw-alert pw-alert--warn">

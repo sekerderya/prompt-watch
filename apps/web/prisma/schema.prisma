@@ -72,6 +72,10 @@ model Trace {
   /// guessed cost is indistinguishable from a measured one.
   pricingUnknown   Boolean     @default(false) @map("pricing_unknown")
   status           TraceStatus
+  /// Client-generated id, echoed back to the host application so it can attach
+  /// an outcome to this call later. Nullable: traces from SDK versions before
+  /// outcomes existed do not have one.
+  clientTraceId    String?     @unique @map("client_trace_id")
   createdAt        DateTime    @default(now()) @map("created_at")
 
   @@index([promptId, createdAt])
@@ -80,4 +84,28 @@ model Trace {
   // index above cannot serve.
   @@index([createdAt])
   @@map("traces")
+}
+
+/// A quality signal the host application reports after the fact — a thumbs-up,
+/// a resolved ticket, a grader's rating.
+///
+/// Deliberately NOT a foreign key to Trace. An application typically knows the
+/// outcome moments after the call, while the trace itself is buffered and
+/// batched, so the outcome can legitimately arrive first. Keying both sides on
+/// client_trace_id lets them land in either order and be joined afterwards.
+///
+/// Nothing here carries user content (ADR-2): a score is a number and a label
+/// is a short tag, both length-checked at the API boundary.
+model Outcome {
+  id            Int      @id @default(autoincrement())
+  clientTraceId String   @unique @map("client_trace_id")
+  /// Normalised to 0..1 so variants stay comparable. Binary outcomes use 0 or 1.
+  score         Float
+  /// Optional short tag describing what was measured, e.g. "thumbs_up".
+  label         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([label])
+  @@map("outcomes")
 }

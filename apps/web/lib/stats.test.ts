@@ -130,7 +130,17 @@ describe("decideVerdict", () => {
     expect(decideVerdict(null, 100, 100).kind).toBe("inconclusive");
   });
 
+  it("flips the winner for a higher-is-better metric", () => {
+    // The quality score is the one metric where more is better; latency, cost
+    // and error rate all read the other way.
+    const lower = decideVerdict(significant, 100, 100);
+    const higher = decideVerdict(significant, 100, 100, { higherIsBetter: true });
+
+    expect(lower.kind === "winner" && lower.winner).toBe("A");
+    expect(higher.kind === "winner" && higher.winner).toBe("B");
+  });
+
   it("honours a custom minimum sample size", () => {
-    expect(decideVerdict(significant, 5, 5, 5).kind).toBe("winner");
+    expect(decideVerdict(significant, 5, 5, { minSamples: 5 }).kind).toBe("winner");
   });
 });

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import OpenAI from "openai";
 
 import { sha256 } from "./hash";
@@ -6,6 +8,18 @@ import { ABCache, assignVariant, type ABTestConfig } from "./abTesting";
 import { TelemetryClient } from "./telemetry";
 import { wrapStream, type StreamOutcome } from "./streamWrapper";
 import { requestJson } from "./http";
+
+/**
+ * Identifies one traced call, handed to the host application while the call is
+ * still in flight so it can correlate its own outcome with this trace.
+ */
+export interface TraceHandle {
+  /** Pass to `OutcomeClient.record()` to attach a quality signal to this call. */
+  traceId: string;
+  promptName: string;
+  abTestId?: number;
+  variant?: "A" | "B";
+}
 
 export interface WrapOpenAIOptions {
   promptName: string;
@@ -22,6 +36,15 @@ export interface WrapOpenAIOptions {
    * so failures are observable instead of only reaching console.error.
    */
   onError?: (error: unknown, context: { operation: "resolve" | "telemetry" }) => void;
+  /**
+   * Fires once per call, synchronously, before the request reaches OpenAI.
+   *
+   * It runs early on purpose: the host application usually needs to stash the
+   * trace id alongside its own request context, and by the time the response
+   * arrives that context may be gone. Firing before the call also means an
+   * outcome can be recorded for a request that ends up failing.
+   */
+  onTrace?: (handle: TraceHandle) => void;
 }
 
 interface ResolveResponse {
@@ -119,7 +142,8 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
     return client;
   }
 
-  const { promptName, backendUrl, getDistinctId, apiKey, backendTimeoutMs, onError } = options;
+  const { promptName, backendUrl, getDistinctId, apiKey, backendTimeoutMs, onError, onTrace } =
+    options;
   const cache = options.cache ?? getOrCreateCache(backendUrl, apiKey);
   const telemetry =
     options.telemetry ??
@@ -175,6 +199,26 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
       resolvePromise = resolvePrompt(systemText);
     }
 
+    // Generated here rather than by the database so the host application can
+    // hold it before the call even reaches OpenAI, and so an outcome can be
+    // recorded for a request that ultimately fails.
+    const clientTraceId = randomUUID();
+    if (onTrace) {
+      try {
+        onTrace({
+          traceId: clientTraceId,
+          promptName,
+          abTestId: traceMeta?.abTestId,
+          variant: traceMeta?.variant as "A" | "B" | undefined,
+        });
+      } catch (err) {
+        // A throwing callback is the host application's bug, not a reason to
+        // fail the model call it is observing.
+        if (onError) onError(err, { operation: "telemetry" });
+        else console.error("[promptwatch] onTrace callback threw:", err);
+      }
+    }
+
     /**
      * Hands a finished measurement to the telemetry client.
      *
@@ -189,13 +233,14 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
           promptId: traceMeta.promptId,
           abTestId: traceMeta.abTestId,
           variant: traceMeta.variant,
+          clientTraceId,
           ...metrics,
         });
         return;
       }
       if (resolvePromise) {
         void resolvePromise.then((resolved) => {
-          if (resolved) telemetry.send({ promptId: resolved.id, ...metrics });
+          if (resolved) telemetry.send({ promptId: resolved.id, clientTraceId, ...metrics });
         });
       }
     };
