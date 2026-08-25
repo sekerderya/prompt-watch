@@ -9,6 +9,14 @@ import { requestJson } from "./http";
 import { randomId } from "./random";
 import { PromptCache, type PublishedPrompt } from "./promptRegistry";
 import { classifyError, type TraceErrorType } from "./errorType";
+import {
+  chatCompletionsAdapter,
+  normalizeUsage,
+  responsesAdapter,
+  type ApiAdapter,
+} from "./apiAdapters";
+
+export type PromptSource = "local" | "registry" | "ab-test";
 
 /**
  * Identifies one traced call, handed to the host application while the call is
@@ -25,9 +33,11 @@ export interface TraceHandle {
    * text the caller passed in - which is also what a backend outage falls back
    * to, so this is the field to assert on when testing that behaviour.
    */
-  promptSource: "local" | "registry" | "ab-test";
+  promptSource: PromptSource;
   /** Released version served, when promptSource is "registry". */
   releaseId?: number;
+  /** Which OpenAI API the call went through. */
+  api: "chat.completions" | "responses";
 }
 
 export interface WrapOpenAIOptions {
@@ -83,8 +93,6 @@ interface ResolveResponse {
   version: number;
 }
 
-type CreateFn = OpenAI.Chat.Completions["create"];
-
 /** Marks an already-wrapped client so double wrapping cannot double-count traces. */
 const WRAPPED = Symbol.for("promptwatch.wrapped");
 
@@ -129,48 +137,67 @@ interface TraceMetrics {
 
 function usageCost(
   model: string | undefined,
-  usage: { prompt_tokens?: number; completion_tokens?: number } | undefined,
+  usage: unknown,
   overrides?: Record<string, ModelPricing>
-): { costUsd: number; pricingUnknown: boolean } {
-  if (!usage) return { costUsd: 0, pricingUnknown: false };
+): { costUsd: number; pricingUnknown: boolean; promptTokens: number; completionTokens: number } {
+  const tokens = normalizeUsage(usage);
+  if (!tokens) {
+    return { costUsd: 0, pricingUnknown: false, promptTokens: 0, completionTokens: 0 };
+  }
   const { pricing, unknown } = resolvePricing(model, overrides);
-  const promptTokens = usage.prompt_tokens ?? 0;
-  const completionTokens = usage.completion_tokens ?? 0;
   return {
     costUsd:
-      pricing.promptPricePer1k * (promptTokens / 1000) +
-      pricing.completionPricePer1k * (completionTokens / 1000),
+      pricing.promptPricePer1k * (tokens.promptTokens / 1000) +
+      pricing.completionPricePer1k * (tokens.completionTokens / 1000),
     pricingUnknown: unknown,
+    promptTokens: tokens.promptTokens,
+    completionTokens: tokens.completionTokens,
   };
 }
 
+type AnyCreate = (body: any, requestOptions?: unknown) => Promise<any>;
+
 /**
- * Builds a Proxy over the client rather than reassigning
- * `client.chat.completions.create`.
+ * Builds a Proxy over the client rather than reassigning the `create` methods.
  *
  * Patching in place mutates an object the caller may also be using unwrapped,
  * and wrapping the same client twice chains the wrappers so every call emits
  * two traces. A proxy leaves the original untouched and makes wrapping
  * idempotent.
  */
-function proxyClient(client: OpenAI, wrappedCreate: CreateFn): OpenAI {
+function proxyClient(
+  client: OpenAI,
+  wrappedChatCreate: AnyCreate,
+  wrappedResponsesCreate: AnyCreate | null
+): OpenAI {
   const passthrough = (target: object, prop: PropertyKey): unknown => {
     const value = Reflect.get(target, prop, target);
     return typeof value === "function" ? value.bind(target) : value;
   };
 
-  const completionsProxy = new Proxy(client.chat.completions, {
-    get: (target, prop) => (prop === "create" ? wrappedCreate : passthrough(target, prop)),
-  });
+  const withCreate = <T extends object>(target: T, create: AnyCreate) =>
+    new Proxy(target, {
+      get: (t, prop) => (prop === "create" ? create : passthrough(t, prop)),
+    });
+
+  const completionsProxy = withCreate(client.chat.completions, wrappedChatCreate);
 
   const chatProxy = new Proxy(client.chat, {
     get: (target, prop) => (prop === "completions" ? completionsProxy : passthrough(target, prop)),
   });
 
+  // `responses` only exists on newer openai releases; older ones pass through.
+  const responsesTarget = (client as unknown as { responses?: object }).responses;
+  const responsesProxy =
+    wrappedResponsesCreate && responsesTarget
+      ? withCreate(responsesTarget, wrappedResponsesCreate)
+      : undefined;
+
   return new Proxy(client, {
     get: (target, prop) => {
       if (prop === WRAPPED) return true;
       if (prop === "chat") return chatProxy;
+      if (prop === "responses" && responsesProxy) return responsesProxy;
       return passthrough(target, prop);
     },
   });
@@ -198,7 +225,6 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
       requestTimeoutMs: backendTimeoutMs,
       onError: onError ? (err) => onError(err, { operation: "telemetry" }) : undefined,
     });
-  const originalCreate = client.chat.completions.create.bind(client.chat.completions);
 
   const resolvePrompt = (promptText: string): Promise<ResolveResponse | null> =>
     requestJson<ResolveResponse>(`${backendUrl}/api/prompts/resolve`, {
@@ -212,132 +238,143 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
       return null;
     });
 
-  const wrappedCreate = (async (
-    body: { messages?: { role?: string; content?: unknown }[]; model?: string },
-    requestOptions?: unknown
-  ) => {
-    const messages = body.messages ?? [];
-    const systemIndex = messages.findIndex((m) => m.role === "system");
-    const systemMessage = systemIndex >= 0 ? messages[systemIndex] : undefined;
-    const systemText =
-      systemMessage && typeof systemMessage.content === "string" ? systemMessage.content : null;
+  /**
+   * Decides which prompt this call should actually send, and how the resulting
+   * trace will be attributed.
+   *
+   * Precedence: a running experiment outranks a release, and a release outranks
+   * the caller's own text. An A/B test is a deliberate, temporary override;
+   * letting a release win over one would make the test measure something other
+   * than what it was set up to measure.
+   */
+  function decidePrompt(localText: string | null): {
+    substituteWith: string | null;
+    traceMeta: TraceMeta | null;
+    resolvePromise: Promise<ResolveResponse | null> | null;
+    promptSource: PromptSource;
+    published?: PublishedPrompt;
+  } {
+    if (localText === null) {
+      return {
+        substituteWith: null,
+        traceMeta: null,
+        resolvePromise: null,
+        promptSource: "local",
+      };
+    }
 
-    const activeTest: ABTestConfig | undefined =
-      systemText !== null ? cache.get(promptName) : undefined;
-    const published: PublishedPrompt | undefined =
-      !activeTest && systemText !== null ? promptCache?.get(promptName) : undefined;
-
-    let resolvePromise: Promise<ResolveResponse | null> | null = null;
-    let requestBody = body;
-    let traceMeta: TraceMeta | null = null;
-    let promptSource: "local" | "registry" | "ab-test" = "local";
-
-    const substitute = (text: string) => ({
-      ...body,
-      messages: messages.map((m, i) => (i === systemIndex ? { ...m, content: text } : m)),
-    });
-
-    // Precedence: a running experiment outranks a release, and a release
-    // outranks the caller's own text. An A/B test is a deliberate, temporary
-    // override; letting a release win over one would make the test measure
-    // something other than what it was set up to measure.
+    const activeTest: ABTestConfig | undefined = cache.get(promptName);
     if (activeTest) {
       const assignment = assignVariant(activeTest, getDistinctId?.());
-      traceMeta = {
-        promptId: assignment.promptId,
-        abTestId: activeTest.id,
-        variant: assignment.variant,
+      return {
+        substituteWith: assignment.promptText,
+        traceMeta: {
+          promptId: assignment.promptId,
+          abTestId: activeTest.id,
+          variant: assignment.variant,
+        },
+        resolvePromise: null,
+        promptSource: "ab-test",
       };
-      requestBody = substitute(assignment.promptText);
-      promptSource = "ab-test";
-    } else if (published) {
-      // A released version is already a known prompt id, so the trace needs no
-      // resolve round trip to be attributed.
-      traceMeta = { promptId: published.promptId, abTestId: null, variant: null };
-      requestBody = substitute(published.promptText);
-      promptSource = "registry";
+    }
 
+    const published = promptCache?.get(promptName);
+    if (published) {
       // The caller's own text still has to reach the registry, or a prompt
       // edited in a new deploy could never appear as a version to promote and
       // the registry would freeze on whatever was released first. Fired and
       // forgotten; its id is not used for this trace.
-      // (`published` is only set when systemText is non-null; restated for the
-      // type checker, which cannot follow that across the two computations.)
-      if (systemText !== null && systemText !== published.promptText) {
-        void resolvePrompt(systemText);
-      }
-    } else if (systemText !== null) {
-      resolvePromise = resolvePrompt(systemText);
+      if (localText !== published.promptText) void resolvePrompt(localText);
+
+      // A released version is already a known prompt id, so the trace needs no
+      // resolve round trip to be attributed.
+      return {
+        substituteWith: published.promptText,
+        traceMeta: { promptId: published.promptId, abTestId: null, variant: null },
+        resolvePromise: null,
+        promptSource: "registry",
+        published,
+      };
     }
 
-    // Generated here rather than by the database so the host application can
-    // hold it before the call even reaches OpenAI, and so an outcome can be
-    // recorded for a request that ultimately fails.
-    const clientTraceId = randomId();
-    if (onTrace) {
-      try {
-        onTrace({
-          traceId: clientTraceId,
-          promptName,
-          abTestId: traceMeta?.abTestId ?? undefined,
-          variant: (traceMeta?.variant ?? undefined) as "A" | "B" | undefined,
-          promptSource,
-          releaseId: published?.releaseId,
-        });
-      } catch (err) {
-        // A throwing callback is the host application's bug, not a reason to
-        // fail the model call it is observing.
-        if (onError) onError(err, { operation: "telemetry" });
-        else console.error("[promptwatch] onTrace callback threw:", err);
-      }
-    }
-
-    /**
-     * Hands a finished measurement to the telemetry client.
-     *
-     * Nothing here is ever awaited by the caller. When the prompt id is only
-     * known once /resolve answers, the trace is emitted from that promise's
-     * continuation - so a slow or hanging backend delays the trace, never the
-     * response the host application is waiting on.
-     */
-    const emitTrace = (metrics: TraceMetrics): void => {
-      if (traceMeta) {
-        telemetry.send({
-          promptId: traceMeta.promptId,
-          abTestId: traceMeta.abTestId ?? undefined,
-          variant: traceMeta.variant ?? undefined,
-          clientTraceId,
-          ...metrics,
-        });
-        return;
-      }
-      if (resolvePromise) {
-        void resolvePromise.then((resolved) => {
-          if (resolved) telemetry.send({ promptId: resolved.id, clientTraceId, ...metrics });
-        });
-      }
+    return {
+      substituteWith: null,
+      traceMeta: null,
+      resolvePromise: resolvePrompt(localText),
+      promptSource: "local",
     };
+  }
 
-    // The model we asked for, not the one echoed back: the API returns a dated
-    // snapshot id ("gpt-4o-mini-2024-07-18") that no pricing alias matches.
-    const requestedModel = requestBody.model;
+  /**
+   * The instrumentation shared by every supported API.
+   *
+   * Only the adapter differs between Chat Completions and the Responses API;
+   * error tracing, the non-blocking guarantee, cost accounting, stream
+   * termination and outcome correlation are written once here.
+   */
+  function instrument(adapter: ApiAdapter, originalCreate: AnyCreate): AnyCreate {
+    return async (body: any, requestOptions?: unknown) => {
+      const localText = adapter.readPrompt(body);
+      const decision = decidePrompt(localText);
 
-    if ((requestBody as { stream?: boolean }).stream === true) {
-      const streamBody = requestBody as Record<string, any>;
-      const originalStreamOptions = streamBody.stream_options;
-      const injectedIncludeUsage = !originalStreamOptions?.include_usage;
-      const finalBody = injectedIncludeUsage
-        ? { ...streamBody, stream_options: { ...originalStreamOptions, include_usage: true } }
-        : streamBody;
+      let requestBody = body;
+      if (decision.substituteWith !== null) {
+        requestBody = adapter.writePrompt(body, decision.substituteWith);
+      }
 
-      const streamStartedAt = Date.now();
+      // Generated here rather than by the database so the host application can
+      // hold it before the call even reaches OpenAI, and so an outcome can be
+      // recorded for a request that ultimately fails.
+      const clientTraceId = randomId();
+      if (onTrace) {
+        try {
+          onTrace({
+            traceId: clientTraceId,
+            promptName,
+            abTestId: decision.traceMeta?.abTestId ?? undefined,
+            variant: (decision.traceMeta?.variant ?? undefined) as "A" | "B" | undefined,
+            promptSource: decision.promptSource,
+            releaseId: decision.published?.releaseId,
+            api: adapter.name,
+          });
+        } catch (err) {
+          // A throwing callback is the host application's bug, not a reason to
+          // fail the model call it is observing.
+          if (onError) onError(err, { operation: "telemetry" });
+          else console.error("[promptwatch] onTrace callback threw:", err);
+        }
+      }
 
-      let rawStream: any;
-      try {
-        rawStream = await originalCreate(finalBody as never, requestOptions as never);
-      } catch (err) {
+      /**
+       * Hands a finished measurement to the telemetry client.
+       *
+       * Nothing here is ever awaited by the caller. When the prompt id is only
+       * known once /resolve answers, the trace is emitted from that promise's
+       * continuation - so a slow or hanging backend delays the trace, never the
+       * response the host application is waiting on.
+       */
+      const emitTrace = (metrics: TraceMetrics): void => {
+        const { traceMeta, resolvePromise } = decision;
+        if (traceMeta) {
+          telemetry.send({
+            promptId: traceMeta.promptId,
+            abTestId: traceMeta.abTestId ?? undefined,
+            variant: traceMeta.variant ?? undefined,
+            clientTraceId,
+            ...metrics,
+          });
+          return;
+        }
+        if (resolvePromise) {
+          void resolvePromise.then((resolved) => {
+            if (resolved) telemetry.send({ promptId: resolved.id, clientTraceId, ...metrics });
+          });
+        }
+      };
+
+      const emitFailure = (startedAt: number, err: unknown): void =>
         emitTrace({
-          latencyMs: Date.now() - streamStartedAt,
+          latencyMs: Date.now() - startedAt,
           promptTokens: 0,
           completionTokens: 0,
           costUsd: 0,
@@ -345,78 +382,95 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
           status: "ERROR",
           errorType: classifyError(err),
         });
+
+      // The model we asked for, not the one echoed back: the API returns a dated
+      // snapshot id ("gpt-4o-mini-2024-07-18") that no pricing alias matches.
+      const requestedModel: string | undefined = requestBody?.model;
+
+      if (adapter.isStreaming(requestBody)) {
+        const { body: finalBody, streamOptions } = adapter.prepareStream(requestBody);
+        const startedAt = Date.now();
+
+        let rawStream: any;
+        try {
+          rawStream = await originalCreate(finalBody, requestOptions);
+        } catch (err) {
+          emitFailure(startedAt, err);
+          throw err;
+        }
+
+        const finish = (
+          status: "SUCCESS" | "ERROR",
+          usage: unknown,
+          firstChunkAt: number | undefined,
+          error?: unknown
+        ): void => {
+          // Latency is time-to-first-chunk, which is what a streaming UI feels.
+          const latencyMs = (firstChunkAt ?? Date.now()) - startedAt;
+          const cost = usageCost(requestedModel, usage, pricingOverrides);
+          emitTrace({
+            latencyMs,
+            promptTokens: cost.promptTokens,
+            completionTokens: cost.completionTokens,
+            costUsd: cost.costUsd,
+            pricingUnknown: cost.pricingUnknown,
+            status,
+            errorType: status === "ERROR" ? classifyError(error) : undefined,
+          });
+        };
+
+        return wrapStream(
+          rawStream,
+          streamOptions,
+          (outcome: StreamOutcome) => finish("SUCCESS", outcome.usage, outcome.firstChunkAt),
+          (err, firstChunkAt) => finish("ERROR", undefined, firstChunkAt, err)
+        );
+      }
+
+      const startedAt = Date.now();
+
+      let response: any;
+      try {
+        response = await originalCreate(requestBody, requestOptions);
+      } catch (err) {
+        // Without this the ERROR status could never be produced on the
+        // non-streaming path, and the dashboard error rate was structurally zero.
+        emitFailure(startedAt, err);
         throw err;
       }
 
-      const finish = (
-        status: "SUCCESS" | "ERROR",
-        usage: any,
-        firstChunkAt: number | undefined,
-        error?: unknown
-      ): void => {
-        // Latency is time-to-first-chunk, which is what a streaming UI feels.
-        const latencyMs = (firstChunkAt ?? Date.now()) - streamStartedAt;
-        const { costUsd, pricingUnknown } = usageCost(requestedModel, usage, pricingOverrides);
-        emitTrace({
-          latencyMs,
-          promptTokens: usage?.prompt_tokens ?? 0,
-          completionTokens: usage?.completion_tokens ?? 0,
-          costUsd,
-          pricingUnknown,
-          status,
-          errorType: status === "ERROR" ? classifyError(error) : undefined,
-        });
-      };
+      const latencyMs = Date.now() - startedAt;
+      const cost = usageCost(
+        requestedModel ?? response?.model,
+        adapter.readUsage(response),
+        pricingOverrides
+      );
 
-      return wrapStream(
-        rawStream,
-        injectedIncludeUsage,
-        (outcome: StreamOutcome) => finish("SUCCESS", outcome.usage, outcome.firstChunkAt),
-        (err, firstChunkAt) => finish("ERROR", undefined, firstChunkAt, err)
-      ) as any;
-    }
-
-    const startedAt = Date.now();
-
-    let response: any;
-    try {
-      response = await originalCreate(requestBody as never, requestOptions as never);
-    } catch (err) {
-      // Without this the ERROR status could never be produced on the
-      // non-streaming path, and the dashboard error rate was structurally zero.
+      // Emitted even when usage is absent: latency and success/failure are still
+      // real data, and a missing usage block should not erase the whole call.
       emitTrace({
-        latencyMs: Date.now() - startedAt,
-        promptTokens: 0,
-        completionTokens: 0,
-        costUsd: 0,
-        pricingUnknown: false,
-        status: "ERROR",
-        errorType: classifyError(err),
+        latencyMs,
+        promptTokens: cost.promptTokens,
+        completionTokens: cost.completionTokens,
+        costUsd: cost.costUsd,
+        pricingUnknown: cost.pricingUnknown,
+        status: "SUCCESS",
       });
-      throw err;
-    }
 
-    const latencyMs = Date.now() - startedAt;
-    const usage = response?.usage;
-    const { costUsd, pricingUnknown } = usageCost(
-      requestedModel ?? response?.model,
-      usage,
-      pricingOverrides
-    );
+      return response;
+    };
+  }
 
-    // Emitted even when usage is absent: latency and success/failure are still
-    // real data, and a missing usage block should not erase the whole call.
-    emitTrace({
-      latencyMs,
-      promptTokens: usage?.prompt_tokens ?? 0,
-      completionTokens: usage?.completion_tokens ?? 0,
-      costUsd,
-      pricingUnknown,
-      status: "SUCCESS",
-    });
+  const chatCreate = instrument(
+    chatCompletionsAdapter,
+    client.chat.completions.create.bind(client.chat.completions) as AnyCreate
+  );
 
-    return response;
-  }) as unknown as CreateFn;
+  const responsesTarget = (client as unknown as { responses?: { create?: AnyCreate } }).responses;
+  const responsesCreate =
+    typeof responsesTarget?.create === "function"
+      ? instrument(responsesAdapter, responsesTarget.create.bind(responsesTarget) as AnyCreate)
+      : null;
 
-  return proxyClient(client, wrappedCreate);
+  return proxyClient(client, chatCreate, responsesCreate);
 }

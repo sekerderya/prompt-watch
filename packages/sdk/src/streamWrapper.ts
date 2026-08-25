@@ -10,9 +10,27 @@ export interface StreamOutcome {
   aborted: boolean;
 }
 
+export interface StreamWrapOptions {
+  /**
+   * Pulls usage out of a chunk. The two OpenAI APIs put it in different places
+   * — `chunk.usage` for Chat Completions, `event.response.usage` on the
+   * Responses API's terminal event — and this is the only difference between
+   * them that matters here.
+   */
+  readUsage?: (chunk: any) => any | undefined;
+  /**
+   * True when a chunk exists only to carry usage that *we* asked for, and the
+   * caller never expected to see it. Omitted means nothing is ever swallowed.
+   */
+  isSyntheticUsageChunk?: (chunk: any) => boolean;
+}
+
+const defaultReadUsage = (chunk: any): any | undefined =>
+  chunk && typeof chunk === "object" ? chunk.usage : undefined;
+
 /**
- * Wraps a streaming completion so usage can be captured without the caller
- * seeing the synthetic usage-only chunk we asked for.
+ * Wraps a streaming response so usage can be captured without disturbing what
+ * the caller sees.
  *
  * Termination is the subtle part. A stream ends one of three ways, and all
  * three must produce telemetry exactly once:
@@ -26,10 +44,13 @@ export interface StreamOutcome {
  */
 export async function* wrapStream(
   originalStream: AbortableStream,
-  injectedIncludeUsage: boolean,
+  options: StreamWrapOptions,
   onDone: (outcome: StreamOutcome) => void,
   onError: (err: unknown, firstChunkAt: number | undefined) => void
 ): AsyncGenerator<any, void, unknown> {
+  const readUsage = options.readUsage ?? defaultReadUsage;
+  const isSynthetic = options.isSyntheticUsageChunk;
+
   let firstChunkAt: number | undefined;
   let capturedUsage: any | undefined;
   let settled = false;
@@ -41,15 +62,12 @@ export async function* wrapStream(
         firstChunkAt = Date.now();
       }
 
-      const hasUsage = Boolean(chunk && typeof chunk === "object" && chunk.usage);
-      const hasNonEmptyChoices =
-        chunk && typeof chunk === "object" && Array.isArray(chunk.choices) && chunk.choices.length > 0;
-
-      if (hasUsage) {
-        capturedUsage = chunk.usage;
-        // Swallow the usage-only chunk only when we are the ones who asked for
-        // it; if the caller set include_usage themselves it is theirs to see.
-        if (!hasNonEmptyChoices && injectedIncludeUsage) continue;
+      const usage = readUsage(chunk);
+      if (usage) {
+        capturedUsage = usage;
+        // Swallow only a chunk the caller did not ask for; anything carrying
+        // real content is passed through untouched even if it also has usage.
+        if (isSynthetic?.(chunk)) continue;
       }
 
       yield chunk;

@@ -1,5 +1,18 @@
 import { describe, it, expect, vi } from "vitest";
-import { wrapStream, type StreamOutcome } from "../streamWrapper";
+import { wrapStream, type StreamOutcome, type StreamWrapOptions } from "../streamWrapper";
+import { chatCompletionsAdapter } from "../apiAdapters";
+
+/**
+ * The Chat Completions swallow rule, taken from the adapter itself rather than
+ * restated here — a test that reimplements the thing it checks proves nothing
+ * (ADR-9).
+ */
+function chatOptions(injectedIncludeUsage: boolean): StreamWrapOptions {
+  const prepared = chatCompletionsAdapter.prepareStream(
+    injectedIncludeUsage ? { stream: true } : { stream: true, stream_options: { include_usage: true } }
+  );
+  return prepared.streamOptions;
+}
 
 /** Minimal async iterable, optionally with an abortable controller like OpenAI's Stream. */
 function createAsyncIterable(
@@ -41,7 +54,7 @@ describe("wrapStream", () => {
     const { calls, onDone } = collectOutcome();
 
     const result: any[] = [];
-    for await (const chunk of wrapStream(createAsyncIterable(chunks), true, onDone, () => {})) {
+    for await (const chunk of wrapStream(createAsyncIterable(chunks), chatOptions(true), onDone, () => {})) {
       result.push(chunk);
     }
 
@@ -60,7 +73,7 @@ describe("wrapStream", () => {
     const { calls, onDone } = collectOutcome();
 
     const result: any[] = [];
-    for await (const chunk of wrapStream(createAsyncIterable(chunks), false, onDone, () => {})) {
+    for await (const chunk of wrapStream(createAsyncIterable(chunks), chatOptions(false), onDone, () => {})) {
       result.push(chunk);
     }
 
@@ -79,7 +92,7 @@ describe("wrapStream", () => {
     ];
 
     const result: any[] = [];
-    for await (const chunk of wrapStream(createAsyncIterable(chunks), false, () => {}, () => {})) {
+    for await (const chunk of wrapStream(createAsyncIterable(chunks), chatOptions(false), () => {}, () => {})) {
       result.push(chunk);
     }
 
@@ -98,7 +111,7 @@ describe("wrapStream", () => {
 
     const result: any[] = [];
     // injectedIncludeUsage=true must not swallow a chunk that has real choices.
-    for await (const chunk of wrapStream(createAsyncIterable(chunks), true, onDone, () => {})) {
+    for await (const chunk of wrapStream(createAsyncIterable(chunks), chatOptions(true), onDone, () => {})) {
       result.push(chunk);
     }
 
@@ -116,7 +129,7 @@ describe("wrapStream", () => {
     const onError = vi.fn();
 
     const result: any[] = [];
-    for await (const chunk of wrapStream(createAsyncIterable(chunks), true, onDone, onError)) {
+    for await (const chunk of wrapStream(createAsyncIterable(chunks), chatOptions(true), onDone, onError)) {
       result.push(chunk);
       break; // user cancelled the generation
     }
@@ -135,7 +148,7 @@ describe("wrapStream", () => {
       { abort }
     );
 
-    for await (const _chunk of wrapStream(source, true, () => {}, () => {})) {
+    for await (const _chunk of wrapStream(source, chatOptions(true), () => {}, () => {})) {
       break;
     }
 
@@ -147,7 +160,7 @@ describe("wrapStream", () => {
     const abort = vi.fn();
     const source = createAsyncIterable([{ choices: [{ delta: { content: "one" } }] }], { abort });
 
-    for await (const _chunk of wrapStream(source, true, () => {}, () => {})) {
+    for await (const _chunk of wrapStream(source, chatOptions(true), () => {}, () => {})) {
       // drain
     }
 
@@ -173,7 +186,7 @@ describe("wrapStream", () => {
     const onError = vi.fn();
 
     await expect(async () => {
-      for await (const _chunk of wrapStream(failing, true, onDone, onError)) {
+      for await (const _chunk of wrapStream(failing, chatOptions(true), onDone, onError)) {
         // drain until it throws
       }
     }).rejects.toThrow("upstream exploded");
@@ -186,7 +199,7 @@ describe("wrapStream", () => {
   it("reports an outcome even for a stream that yields nothing", async () => {
     const { calls, onDone } = collectOutcome();
 
-    for await (const _chunk of wrapStream(createAsyncIterable([]), true, onDone, () => {})) {
+    for await (const _chunk of wrapStream(createAsyncIterable([]), chatOptions(true), onDone, () => {})) {
       // nothing
     }
 
