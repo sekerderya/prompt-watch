@@ -38,6 +38,15 @@ services:
       DATABASE_URL: postgresql://promptwatch:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/promptwatch
       PROMPTWATCH_API_KEY: ${PROMPTWATCH_API_KEY:?set PROMPTWATCH_API_KEY before deploying}
       NODE_ENV: production
+      # Telemetry older than this is pruned by `npm run retention`. Set to 0 to
+      # keep everything; see the Operations section of the README.
+      PROMPTWATCH_RETENTION_DAYS: ${PROMPTWATCH_RETENTION_DAYS:-90}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     restart: unless-stopped
 
 volumes:

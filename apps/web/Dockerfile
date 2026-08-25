@@ -51,6 +51,11 @@ COPY --from=builder --chown=nextjs:nodejs /app ./
 USER nextjs
 EXPOSE 3000
 
+# Hits the endpoint that actually touches the database, so an image with a
+# broken connection reports unhealthy instead of merely "process is alive".
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 WORKDIR /app/apps/web
 # Schema changes are applied before the server accepts traffic.
 CMD ["sh", "-c", "npx prisma migrate deploy --schema=./prisma/schema.prisma && npm run start"]

@@ -32,6 +32,7 @@ services:
       # PROMPTWATCH_API_KEY in .env left auth silently disabled inside the
       # container while the docs claimed it was on.
       PROMPTWATCH_API_KEY: ${PROMPTWATCH_API_KEY:-}
+      PROMPTWATCH_RETENTION_DAYS: ${PROMPTWATCH_RETENTION_DAYS:-90}
     volumes:
       - .:/app
       - /app/node_modules
