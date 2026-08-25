@@ -44,6 +44,22 @@ interface ErrorBucket {
   count: number;
 }
 
+interface Release {
+  id: number;
+  promptId: number;
+  version: number;
+  source: "AB_TEST_WINNER" | "MANUAL" | "ROLLBACK";
+  reason: string | null;
+  abTestId: number | null;
+  createdAt: string;
+}
+
+const SOURCE_LABEL: Record<Release["source"], string> = {
+  AB_TEST_WINNER: "won an A/B test",
+  MANUAL: "promoted manually",
+  ROLLBACK: "rolled back",
+};
+
 function fmt(v: number | null | undefined, digits = 0, suffix = ""): string {
   return v == null || Number.isNaN(v) ? "—" : `${v.toFixed(digits)}${suffix}`;
 }
@@ -63,6 +79,12 @@ export default function PromptsPage() {
   const [metrics, setMetrics] = useState<VersionMetrics[]>([]);
   const [errorBreakdown, setErrorBreakdown] = useState<ErrorBucket[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [releases, setReleases] = useState<Release[]>([]);
+  const [liveReleaseId, setLiveReleaseId] = useState<number | null>(null);
+  const [releasePending, setReleasePending] = useState(false);
+  const [releaseMsg, setReleaseMsg] = useState<{ kind: "error" | "success"; text: string } | null>(
+    null
+  );
   const [diffPair, setDiffPair] = useState<{ before: number; after: number } | null>(null);
 
   useEffect(() => {
@@ -95,12 +117,17 @@ export default function PromptsPage() {
         fetch(`/api/metrics/prompt?name=${encodeURIComponent(name)}&days=${windowDays}`).then((r) =>
           r.ok ? r.json() : { versions: [], errorBreakdown: [] }
         ),
+        fetch(`/api/releases?name=${encodeURIComponent(name)}`).then((r) =>
+          r.ok ? r.json() : { releases: [], liveReleaseId: null }
+        ),
       ])
-        .then(([versionList, promptMetrics]) => {
+        .then(([versionList, promptMetrics, releaseData]) => {
           if (cancelled) return;
           setVersions(versionList);
           setMetrics(promptMetrics.versions ?? []);
           setErrorBreakdown(promptMetrics.errorBreakdown ?? []);
+          setReleases(releaseData.releases ?? []);
+          setLiveReleaseId(releaseData.liveReleaseId ?? null);
           // Default to comparing the two most recent versions, which is the
           // comparison anyone opening this page is here to make.
           setDiffPair(
@@ -114,6 +141,8 @@ export default function PromptsPage() {
           setVersions([]);
           setMetrics([]);
           setErrorBreakdown([]);
+          setReleases([]);
+          setLiveReleaseId(null);
         })
         .finally(() => !cancelled && setDetailLoading(false));
       return () => {
@@ -129,6 +158,49 @@ export default function PromptsPage() {
   }, [selected, days, loadDetail]);
 
   const metricsFor = (promptId: number) => metrics.find((m) => m.promptId === promptId);
+
+  const liveRelease = releases.find((r) => r.id === liveReleaseId) ?? null;
+  const livePromptId = liveRelease?.promptId ?? null;
+
+  /**
+   * Promotes a version by hand.
+   *
+   * Anything below the currently live version is labelled a rollback rather
+   * than a plain promotion, because that distinction is the one worth seeing in
+   * the history at 3am.
+   */
+  async function release(promptId: number, version: number) {
+    setReleasePending(true);
+    setReleaseMsg(null);
+    const isRollback = liveRelease !== null && version < liveRelease.version;
+    try {
+      const res = await fetch("/api/releases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          promptId,
+          source: isRollback ? "ROLLBACK" : "MANUAL",
+          reason: isRollback
+            ? `Rolled back to v${version} from v${liveRelease?.version}.`
+            : `Promoted v${version} from the Prompts page.`,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setReleaseMsg({ kind: "error", text: body.error ?? "Could not release this version" });
+        return;
+      }
+      setReleaseMsg({
+        kind: "success",
+        text: `v${version} is now served. Running SDK instances pick it up within one poll (~30s).`,
+      });
+      if (selected) loadDetail(selected, days);
+    } catch {
+      setReleaseMsg({ kind: "error", text: "Could not release this version" });
+    } finally {
+      setReleasePending(false);
+    }
+  }
   const before = versions.find((v) => v.id === diffPair?.before);
   const after = versions.find((v) => v.id === diffPair?.after);
 
@@ -241,6 +313,7 @@ export default function PromptsPage() {
                       <th className="pw-num">Cost</th>
                       <th className="pw-num">Quality</th>
                       <th>Created</th>
+                      <th>Released</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -263,12 +336,71 @@ export default function PromptsPage() {
                             {m && m.scored > 0 ? `${percent(m.avgScore)} (n=${m.scored})` : "—"}
                           </td>
                           <td className="pw-subtle">{v.createdAt.slice(0, 10)}</td>
+                          <td>
+                            {livePromptId === v.id ? (
+                              <span className="pw-badge pw-badge--active">live</span>
+                            ) : (
+                              <button
+                                className="pw-btn pw-btn--ghost pw-btn--sm"
+                                disabled={releasePending}
+                                onClick={() => release(v.id, v.version)}
+                              >
+                                {liveRelease && v.version < liveRelease.version
+                                  ? "Roll back"
+                                  : "Release"}
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
               </div>
+
+              {releaseMsg && (
+                <p className={`pw-alert pw-alert--${releaseMsg.kind}`}>{releaseMsg.text}</p>
+              )}
+
+              {liveRelease === null ? (
+                <p className="pw-subtle pw-release-note">
+                  No version is released. Every call uses the prompt in your application code —
+                  release one to serve it centrally instead, and to make{" "}
+                  <code>useRegistry</code> clients follow it.
+                </p>
+              ) : (
+                <p className="pw-subtle pw-release-note">
+                  Serving <strong>v{liveRelease.version}</strong> to SDK clients started with{" "}
+                  <code>useRegistry</code>. Everyone else keeps using the prompt in their own
+                  code, which is also the fallback if this backend is unreachable.
+                </p>
+              )}
+
+              {releases.length > 0 && (
+                <div className="pw-diff-block">
+                  <span className="pw-label">Release history</span>
+                  <ul className="pw-timeline">
+                    {releases.map((r) => (
+                      <li
+                        key={r.id}
+                        className={`pw-timeline__item${
+                          r.id === liveReleaseId ? " pw-timeline__item--live" : ""
+                        }`}
+                      >
+                        <span className="pw-timeline__head">
+                          <span className="pw-badge pw-badge--a">v{r.version}</span>
+                          <span className="pw-subtle">{SOURCE_LABEL[r.source]}</span>
+                          {r.id === liveReleaseId && (
+                            <span className="pw-badge pw-badge--active">live</span>
+                          )}
+                          <span className="pw-subtle">{r.createdAt.slice(0, 10)}</span>
+                        </span>
+                        {r.reason && <span className="pw-timeline__reason">{r.reason}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               {errorBreakdown.length > 0 && (
                 <div className="pw-error-breakdown">

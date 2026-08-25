@@ -10,7 +10,11 @@
  *   2) docker compose up -d                     (the backend must be running)
  *   3) npm run demo
  *
- * The demo stops the A/B test it creates on the way out, so it can be run
+ * It runs the whole loop: version a prompt, test two variants, collect quality
+ * outcomes, promote the winner, serve it to a client whose own code still holds
+ * the loser, and show the fallback when the backend is unreachable.
+ *
+ * The A/B test it creates is stopped on the way out, so it can be run
  * repeatedly without leaving conflicting active tests behind.
  *
  * If OPENAI_API_KEY is set (in .env), real OpenAI calls are made.
@@ -26,6 +30,7 @@ import OpenAI from "openai";
 import {
   wrapOpenAI,
   ABCache,
+  PromptCache,
   TelemetryClient,
   OutcomeClient,
   assignVariant,
@@ -455,7 +460,109 @@ async function main(): Promise<void> {
   console.log(`   Total chunks received: ${chunkCount}\n`);
 
   line();
-  console.log("6️⃣  STOPPING THE TEST");
+  console.log("6️⃣  SHIPPING THE WINNER");
+  line();
+
+  // The dashboard has just said B is better. Until the registry existed, the
+  // next step was to go and edit a string in the application's source.
+  const winner: "A" | "B" =
+    (comparison as VariantRow[]).find((r) => r.variant === "B")!.avgScore! >
+    (comparison as VariantRow[]).find((r) => r.variant === "A")!.avgScore!
+      ? "B"
+      : "A";
+
+  const promoteRes = await fetch(`${BACKEND_URL}/api/ab-tests/${createdTest.id}/promote`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify({ variant: winner }),
+  });
+
+  if (!promoteRes.ok) {
+    console.warn(`⚠ Could not promote (HTTP ${promoteRes.status}); skipping the rollout demo.`);
+  } else {
+    const { release } = await promoteRes.json();
+    console.log(
+      `✅ Variant ${winner} promoted. "${PROMPT_NAME}" now serves v${
+        winner === "A" ? v1.version : v2.version
+      }, and the test was stopped.`
+    );
+    console.log(`   Reason recorded: ${release.reason}\n`);
+
+    line();
+    console.log("7️⃣  A CLIENT THAT FOLLOWS THE REGISTRY");
+    line();
+
+    // A fresh client whose *code* still contains the losing prompt.
+    const registryCache = new PromptCache();
+    registryCache.start(BACKEND_URL, 2000, SDK_API_KEY);
+    await sleep(1200);
+
+    let servedSource = "?";
+    const followerClient = wrapOpenAI(useReal ? new OpenAI() : createMockClient(), {
+      promptName: PROMPT_NAME,
+      backendUrl: BACKEND_URL,
+      cache: new ABCache(),
+      telemetry,
+      apiKey: SDK_API_KEY,
+      useRegistry: true,
+      promptCache: registryCache,
+      onTrace: (handle) => {
+        servedSource = handle.promptSource;
+      },
+    });
+
+    console.log(`→ Its code still says: "${PROMPT_V1.slice(0, 48)}..."`);
+    await followerClient.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: PROMPT_V1 },
+        { role: "user", content: USER_QUESTION },
+      ],
+    });
+    console.log(`✅ Prompt actually sent came from: ${servedSource} (no deploy involved)\n`);
+
+    line();
+    console.log("8️⃣  WHAT HAPPENS WHEN PROMPTWATCH IS DOWN");
+    line();
+
+    // The reason remote prompt serving is safe here. A cache that never reached
+    // a backend holds nothing, and the SDK falls back to the caller's own text.
+    const offlineCache = new PromptCache();
+    offlineCache.start("http://127.0.0.1:9", 60_000, undefined, { onError: () => {} });
+    await sleep(300);
+
+    let offlineSource = "?";
+    const offlineClient = wrapOpenAI(useReal ? new OpenAI() : createMockClient(), {
+      promptName: PROMPT_NAME,
+      backendUrl: BACKEND_URL,
+      cache: new ABCache(),
+      telemetry,
+      apiKey: SDK_API_KEY,
+      useRegistry: true,
+      promptCache: offlineCache,
+      onTrace: (handle) => {
+        offlineSource = handle.promptSource;
+      },
+    });
+
+    await offlineClient.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: PROMPT_V1 },
+        { role: "user", content: USER_QUESTION },
+      ],
+    });
+    console.log(
+      `✅ Registry unreachable → prompt came from: ${offlineSource}. ` +
+        "The application never notices (ADR-3, ADR-11).\n"
+    );
+
+    registryCache.stop();
+    offlineCache.stop();
+  }
+
+  line();
+  console.log("9️⃣  STOPPING THE TEST");
   line();
   // Leaving the test ACTIVE would make a second `npm run demo` collide with it:
   // the backend now rejects a second active test for the same prompt.
@@ -465,7 +572,7 @@ async function main(): Promise<void> {
     body: JSON.stringify({ status: "STOPPED" }),
   });
   if (stopRes.ok) {
-    console.log(`✅ "support-agent-tone-test" stopped — the demo is re-runnable.`);
+    console.log(`✅ "support-agent-tone-test" is stopped — the demo is re-runnable.`);
     console.log("   Restart it any time from the A/B Tests page.\n");
   } else {
     console.warn(`⚠ Could not stop the test (HTTP ${stopRes.status}). Stop it from the dashboard.`);
@@ -476,7 +583,7 @@ async function main(): Promise<void> {
   demoCache.stop();
 
   // versioning (2) + bucketing (6) + simulated traffic + streaming (1)
-  const traceCount = 2 + SIMULATED_USERS.length + TRAFFIC + 1;
+  const traceCount = 2 + SIMULATED_USERS.length + TRAFFIC + 3;
   line();
   console.log(
     `✅ DEMO COMPLETE — ${traceCount} traces, ${recorded} outcomes, ` +

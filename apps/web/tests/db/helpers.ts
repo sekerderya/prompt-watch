@@ -21,8 +21,11 @@ export function assertTestDatabase(): void {
 }
 
 export async function resetDatabase(): Promise<void> {
+  // prompt_releases would be caught by CASCADE via its FK to prompts, but naming
+  // every table keeps the reset obvious rather than dependent on that.
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "outcomes", "traces", "ab_tests", "prompts" RESTART IDENTITY CASCADE'
+    'TRUNCATE TABLE "outcomes", "traces", "prompt_releases", "ab_tests", "prompts" ' +
+      "RESTART IDENTITY CASCADE"
   );
 }
 

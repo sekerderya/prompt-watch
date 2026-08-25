@@ -168,6 +168,8 @@ export default function ABTestsPage() {
   const [metrics, setMetrics] = useState<VariantMetrics[]>([]);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [statusPending, setStatusPending] = useState(false);
+  const [promotePending, setPromotePending] = useState(false);
+  const [promoted, setPromoted] = useState<{ version: number; testId: number } | null>(null);
 
   const [name, setName] = useState("");
   const [promptName, setPromptName] = useState("");
@@ -259,6 +261,24 @@ export default function ABTestsPage() {
   const unpricedTotal = (metricsA?.unpriced ?? 0) + (metricsB?.unpriced ?? 0);
   const scoredTotal = (metricsA?.scored ?? 0) + (metricsB?.scored ?? 0);
 
+  // Quality is the reason to prefer a prompt; cost and latency are tie-breakers.
+  // Only a genuine winner is offered for promotion, and only one metric is cited
+  // so the release reason says exactly what the decision rested on.
+  const shippable = ((): { winner: "A" | "B"; metric: string; pValue: number } | null => {
+    const candidates: [string, Verdict][] = [
+      ["quality score", scoreVerdict(metricsA, metricsB)],
+      ["error rate", errorVerdict(metricsA, metricsB)],
+      ["cost", costVerdict(metricsA, metricsB)],
+      ["latency", latencyVerdict(metricsA, metricsB)],
+    ];
+    for (const [metric, verdict] of candidates) {
+      if (verdict.kind === "winner") {
+        return { winner: verdict.winner, metric, pValue: verdict.pValue };
+      }
+    }
+    return null;
+  })();
+
   // Creating a second active test for one prompt is rejected now, but rows
   // predating that rule can still be in the table. The SDK caches one test per
   // prompt name, so while this holds, which variant a user sees depends on
@@ -294,6 +314,42 @@ export default function ABTestsPage() {
       setFormMsg({ kind: "error", text: "Could not update the test" });
     } finally {
       setStatusPending(false);
+    }
+  }
+
+  /**
+   * Ships the winning variant.
+   *
+   * The server recomputes the comparison and stores it as evidence, so the
+   * release explains itself even after retention has removed the traces behind
+   * it. The button only appears for a variant that actually won, but the API
+   * stays unopinionated - a rollback must never be blocked by a p-value.
+   */
+  async function promoteWinner(test: ABTest, variant: "A" | "B", metric: string, pValue: number) {
+    setPromotePending(true);
+    setFormMsg(null);
+    try {
+      const res = await fetch(`/api/ab-tests/${test.id}/promote`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          variant,
+          reason: `Won "${test.name}" on ${metric} (p = ${pValue.toFixed(3)}).`,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFormMsg({ kind: "error", text: body.error ?? "Could not promote the winner" });
+        return;
+      }
+      const version = variant === "A" ? selected?.variantA?.version : selected?.variantB?.version;
+      setPromoted({ version: version ?? 0, testId: test.id });
+      await loadTests();
+      await loadMetrics(test.id);
+    } catch {
+      setFormMsg({ kind: "error", text: "Could not promote the winner" });
+    } finally {
+      setPromotePending(false);
     }
   }
 
@@ -505,6 +561,43 @@ export default function ABTestsPage() {
                         </tr>
                       </tbody>
                     </table>
+
+                    {shippable && (
+                      <div className="pw-promote">
+                        <div>
+                          <span className="pw-label">Ship the result</span>
+                          <p className="pw-subtle">
+                            Variant {shippable.winner} won on {shippable.metric} (p ={" "}
+                            {shippable.pValue.toFixed(3)}). Promoting it releases that version
+                            and stops the test. SDK instances started with{" "}
+                            <code>useRegistry</code> pick it up on their next poll — no deploy.
+                          </p>
+                        </div>
+                        <button
+                          className="pw-btn"
+                          disabled={promotePending}
+                          onClick={() =>
+                            promoteWinner(
+                              selected,
+                              shippable.winner,
+                              shippable.metric,
+                              shippable.pValue
+                            )
+                          }
+                        >
+                          {promotePending
+                            ? "Promoting…"
+                            : `Promote variant ${shippable.winner}`}
+                        </button>
+                      </div>
+                    )}
+
+                    {promoted?.testId === selected.id && (
+                      <p className="pw-alert pw-alert--success">
+                        v{promoted.version} is now the released version of{" "}
+                        {selected.promptName}. See its history on the Prompts page.
+                      </p>
+                    )}
 
                     {scoredTotal === 0 && (
                       <p className="pw-alert pw-alert--warn">
