@@ -28,7 +28,13 @@ docker compose up -d   # starts PostgreSQL and the Next.js backend
 npm run demo
 ```
 
-Then open **http://localhost:3000** — the dashboard updates in real time as the demo runs.
+Then open **http://localhost:3000**. Three pages, updating as the demo runs:
+
+| Page | What it shows |
+| --- | --- |
+| **Dashboard** | Cost, request volume, error rate and reported quality across every prompt |
+| **Prompts** | Every tracked prompt, its version history, a word-level diff between any two versions, per-version metrics, and a breakdown of what its failures actually were |
+| **A/B Tests** | Variant comparison with a winner declared only when the difference is statistically significant |
 
 ### Step-by-step
 
@@ -50,6 +56,7 @@ By default the demo runs against a deterministic mock client, so no API key is r
 | `npm run lint` | ESLint across every workspace |
 | `npm run typecheck` | `tsc --noEmit` for the SDK and the web app |
 | `npm run build` | Builds the SDK, then the Next.js app |
+| `npm run retention --workspace=apps/web` | Prunes telemetry past the retention window |
 
 CI runs all of these plus a production image build against a throwaway Postgres service,
 and every one of them can fail the build.
@@ -89,6 +96,19 @@ is `0` or `1`, a 1-5 star rating is `(stars - 1) / 4`. Recording is idempotent p
 so a user changing their rating updates the row instead of adding a contradictory second
 one, and an outcome may safely arrive before the trace it belongs to.
 
+An application that tracks several prompts should share one poll loop and one telemetry
+queue across all of them rather than wiring each separately:
+
+```ts
+import { createPromptWatch } from "@promptwatch/sdk";
+
+const pw = createPromptWatch({ backendUrl, apiKey });
+const support = pw.wrap(openai, { promptName: "support-agent" });
+const summariser = pw.wrap(openai, { promptName: "summariser" });
+
+await pw.close();   // flushes telemetry and stops polling
+```
+
 The dashboard then compares variants on quality, and only calls a winner once the gap is
 statistically significant. `npm run demo` does exactly this end to end: it drives 160 calls
 whose simulated satisfaction differs by variant, and the A/B page ends up reporting
@@ -112,6 +132,32 @@ PROMPTWATCH_API_KEY=$(openssl rand -hex 32) POSTGRES_PASSWORD=$(openssl rand -he
 ```
 
 Both variables are required — compose refuses to start without them, so a deployment cannot inherit the demo's open-access default. Postgres publishes no host port, and the web service binds to `127.0.0.1` unless `PROMPTWATCH_BIND` says otherwise (put a TLS-terminating reverse proxy in front of it). Pending migrations are applied before the server accepts traffic.
+
+## Operations
+
+**Health.** `GET /api/health` performs a real database round trip and answers 503 when it
+fails. It is deliberately unauthenticated — an orchestrator cannot present a bearer token,
+and a health check that answers 401 always reads as unhealthy. Both the production image
+and `docker-compose.prod.yml` wire it as their container healthcheck.
+
+**Retention.** An observability tool writes a row per model call. At ten calls a second
+that is ~860k rows a day, under a dashboard that scans the table for every rollup, so
+telemetry ages out:
+
+```bash
+npm run retention --workspace=apps/web
+```
+
+It deletes traces older than `PROMPTWATCH_RETENTION_DAYS` (default 90; set `0` to keep
+everything) in batches, and sweeps outcomes orphaned by the deletion — they have no foreign
+key to traces, by design (ADR-8). Prompts and A/B tests are never deleted: they are
+configuration, they are tiny, and a prompt version is the thing a future trace refers to.
+
+Run it on a schedule. With the compose stack:
+
+```
+0 4 * * *  docker compose exec -T web npm run retention
+```
 
 ## Architecture
 
@@ -199,6 +245,7 @@ flowchart TB
 
     OpenAI["OpenAI API"]
     Browser["Your Browser"]
+    Cron["Scheduled job"]
 
     SDK ==>|"real LLM call — synchronous"| OpenAI
     SDK -.->|"POST /api/prompts/resolve — fire-and-forget"| API
@@ -207,6 +254,7 @@ flowchart TB
     App ==>|"POST /api/outcomes — the quality signal"| API
     Cache -.->|"GET /api/ab-tests/active"| API
     Browser -->|"localhost:3000"| Dash
+    Cron -.->|"npm run retention — ages out old traces"| PG
 
     style OpenAI fill:#10a37f,color:#fff
     style PG fill:#336791,color:#fff
@@ -214,184 +262,20 @@ flowchart TB
 
 ## Architectural Decision Records
 
-### ADR-1 — In-Memory `ABCache` over a Centralized Redis
+The reasoning behind the choices that shaped this project, including the ones it got
+wrong. Each is a standalone document under [`docs/adr/`](docs/adr).
 
-**Decision:** Each SDK instance holds its own in-memory `Map` of active A/B tests, refreshed on a periodic poll (default: every 30 seconds, jittered to avoid a synchronized thundering-herd across replicas).
-
-**Why:** The variant-assignment decision sits directly on the hot path of every single LLM call. A `Map.get()` costs nothing; a network round trip to Redis would add real, avoidable latency to every request, for a decision that tolerates eventual consistency far better than it tolerates added latency. Requiring Redis as a hard dependency also raises the adoption bar for what is meant to be an `npm install`-and-go SDK.
-
-**Trade-off, stated plainly:** instances can disagree for up to one polling interval. If a test is created or ended, already-running instances keep serving the previous state until their next poll. For A/B testing, where a few seconds of staleness costs nothing, this is a deliberate trade-off, not an oversight.
-
-**One active test per prompt:** the cache is keyed by prompt name, so two active tests for the same prompt would make the served variant depend on response ordering. The backend rejects a second active test for a prompt (409) under the same advisory lock the resolve path uses, and the cache resolves any leftover duplicate deterministically (newest wins) while logging a warning.
-
-**When to revisit:** if PromptWatch ever expands from A/B testing into safety-critical feature-flagging (instant kill-switch semantics), in-memory polling stops being sufficient and a push-based invalidation layer (Redis pub/sub or a webhook) becomes necessary. That is explicitly out of scope today.
-
-### ADR-2 — Privacy-First Data Dropping
-
-**Decision:** The SDK inspects the outgoing message array for exactly one thing: the `role: "system"` entry. Everything else — `role: "user"` content and the model's own `role: "assistant"` output — is read only to compute token counts and is never transmitted to the backend or persisted, under any configuration.
-
-**Why:** A system prompt is developer-authored configuration; versioning it is no different, privacy-wise, from versioning a feature flag. A user's message is exactly the class of data that KVKK (Türkiye) and GDPR (EU) exist to protect. By architecturally never transmitting it, PromptWatch removes an entire category of data-protection obligation from its own operation — there is no personal data flowing through the pipeline to be breached or governed by a DPA. This is data minimization (GDPR Art. 5(1)(c); KVKK md. 4) enforced at the architecture layer, not left as an opt-in setting that can be misconfigured.
-
-**Trade-off, stated plainly:** this makes PromptWatch a metrics tool, not a conversation-replay tool. "Why did the model answer this specific user this way" is a question it is deliberately unable to answer. Teams that need content-level debugging need a separate, consent-aware logging layer.
-
-### ADR-3 — Non-Blocking, Fire-and-Forget Telemetry
-
-**Decision:** Neither the prompt-resolve call nor the trace-logging call is ever awaited before the real OpenAI request is dispatched. PromptWatch's own backend health has zero effect on the latency or success of the LLM call it observes.
-
-**Why:** An observability tool that can slow down or break the thing it observes will not survive a single production incident review. If the backend is degraded or fully down, the host application behaves exactly as if PromptWatch were never installed — the only casualty is the observability data for that window.
-
-**How this is actually enforced:** the resolve request is dispatched in parallel with the OpenAI call and is never awaited on the path back to the caller. Because the prompt id is only known once `/resolve` answers, the trace is emitted from that promise's continuation (`resolvePromise.then(...)`) rather than from the request path. A slow backend therefore delays the *trace*, never the response the host application is waiting on. Every backend call additionally carries an `AbortSignal` timeout, so a server that accepts a connection and then hangs cannot leak a pending request.
-
-**An earlier version of this document overstated the guarantee.** It claimed the ordering meant the await "can never add latency to the call the host application is waiting on." That was wrong: the non-streaming path did `await resolvePromise` after the OpenAI response but *before* returning, so the caller's `create()` blocked on PromptWatch's backend — and with no timeout, a hanging backend blocked it indefinitely. The streaming path was already correct. Both paths now share the same non-blocking emit, and a regression test asserts that `create()` returns in under a second while `/resolve` stalls for three.
-
-**Backpressure:** traces are buffered in a bounded queue (default 1000) with a single request in flight at a time. Under low load a trace ships immediately; under burst load, traces that arrive during a request coalesce into the next batch, so backend round trips scale with latency rather than with call volume. Retryable failures (429, 5xx, network) are retried with backoff; a full queue drops the oldest traces and counts them, which is visible through `TelemetryClient.stats()`.
-
-**Trade-off, stated plainly:** if the backend is down for an hour, an hour of telemetry is gone, permanently. That failure is now surfaced through an optional `onError` hook on `wrapOpenAI` instead of only reaching `console.error`.
-
-
-### ADR-4 — Opt-In Shared-Secret Auth, Not Multi-User Accounts
-
-**Decision:** PromptWatch uses a single shared secret (`PROMPTWATCH_API_KEY`) that gates all backend API access. When the env var is unset or empty, auth is completely disabled — the Quickstart, demo, and local development experience remains identical to the pre-auth version. When set, all API routes (except `/login` and static assets) require `Authorization: Bearer <key>` or a valid `pw_session` cookie; the SDK attaches the key via an `apiKey` option.
-
-**Why not a full user/session system:** PromptWatch is a self-hosted, single-operator observability tool for LLM system prompts. The threat model is "protect the dashboard and API from casual access on a shared network," not "isolate multiple tenants with per-user RBAC." A full auth system (passwords, email verification, password reset, sessions with CSRF, user management UI) adds enormous surface area and operational burden for a use case that doesn't need it. A single shared secret is the simplest thing that provides meaningful gatekeeping.
-
-**Why default OFF:** Local development and the 60-second demo must work with `docker compose up -d` and `npm run demo` — zero configuration. Requiring a generated key before the first `npm run demo` adds friction that defeats the "drop-in" promise. The trade-off is explicit: anyone who deploys PromptWatch to a shared network without setting `PROMPTWATCH_API_KEY` is consciously choosing open access. The docs state this clearly.
-
-**Why hash + constant-time comparison:** The secret is never stored in plaintext in the database or logs. The middleware hashes the incoming candidate with SHA-256 (via Web Crypto API, available in both Node and Edge runtimes) and compares it to the hash of the configured key using a byte-by-byte XOR accumulation loop that never early-exits. This defeats timing attacks even if the attacker can measure nanosecond-scale differences, and because both sides are pre-hashed to fixed-length hex strings, no length-based exception can occur (unlike `node:crypto.timingSafeEqual` which throws on length mismatch).
-
-**Rate limiting:** hashing plus constant-time comparison defends the secret against a timing side-channel, but for a long time left the far cheaper attack — guessing it — completely unbounded. `/api/auth/login` is now limited to 10 attempts per five minutes per client, keyed on the forwarded client address, answering 429 with `Retry-After` beyond that. The counter is in process memory, which matches the single-instance deployment model; a replicated deployment would need a shared store.
-
-**Why Web Crypto API, not `node:crypto`:** Next.js Middleware runs on the Edge runtime where `node:crypto` is unavailable. `crypto.subtle.digest("SHA-256", ...)` works identically in Node, Edge, and browser contexts, keeping the auth logic portable and runtime-agnostic.
-
-**When to revisit:** If PromptWatch ever needs multi-tenant deployments (separate teams on the same backend, per-user audit logs, SSO/SAML/OIDC integration), the shared-secret model will need to be replaced with a proper identity provider. That is explicitly out of scope today — the architecture document marks this as a future decision point.
-
-**Note on session cookie:** The `pw_session` cookie carries the raw shared secret (`PROMPTWATCH_API_KEY`) directly — not a hashed value, not a separate session token. This is an explicit design choice for a single-operator, self-hosted tool: the credential itself IS the session value. It is protected by HttpOnly, Secure (in production), and SameSite=Lax flags. There is no additional session-layer middleware beyond the simple Bearer-cookie check in the auth middleware. For a one-person tool, this eliminates the complexity of a full session management system while still providing meaningful access control. Acceptable because the threat model is "protect from casual access on shared networks," not "isolate multi-tenant users."
-
-### ADR-5 — Transparent Streaming Support via Stream Wrapping
-
-**Decision:** Wrap the OpenAI `create()` response stream with `wrapStream` so that
-`include_usage` can be injected silently (the synthetic usage-only chunk is never
-yielded to the caller). Latency is measured as time-to-first-chunk, not total stream
-duration.
-
-**Why:** Transparent wrapping means existing non-streaming code paths are untouched; the
-streaming block is inserted only when `(requestBody as any).stream === true`. This keeps
-the fire-and-forget telemetry principle intact and avoids blocking the real OpenAI call.
-
-**Termination is the subtle part.** A stream ends one of three ways, and each must produce
-telemetry exactly once: it runs to completion, it throws, or the consumer stops iterating
-early. The third case is the common one — a user cancels a generation — and it was
-originally unhandled: `break`ing out of the loop left the generator suspended at its
-`yield`, so neither the success nor the error callback ever fired. The trace was lost and
-the upstream HTTP connection stayed open. Settling now happens in a `finally` block, which
-records the partial call and aborts the upstream stream.
-
-**Trade-off:** The `wrapStream` adapter only supports `for-await-of` consumption — it does
-not replicate the Stream class's other methods (pipe, transform, etc.). Users needing
-advanced stream transformations must handle them outside the wrapper. This is explicitly
-a telemetry-only adapter, not a full stream pipeability layer.
-
-**When-to-revisit:** If future work requires full stream pipeability or Backpressure-aware
-processing, a dedicated `Stream` class with full AsyncIterable operations should be built
-separately, leaving `wrapStream` as the lightweight telemetry-only adapter.
-
-### ADR-6 — A Winner Requires Significance, Not Just a Lower Average
-
-**Decision:** The dashboard declares a winner for a metric only when both arms have at
-least 30 traces *and* the difference clears a two-sided test at α = 0.05 — Welch's t-test
-for latency and cost, a two-proportion z-test for error rate. Otherwise it shows the
-numbers with either "needs 30/variant — have N vs M" or "no significant difference
-(p = …)".
-
-**Why:** The earlier version picked whichever average was lower and put a "winner" badge on
-it. After a demo run that meant crowning a variant on three requests per arm, which is
-noise, not a result. A tool whose entire purpose is to help someone choose between two
-prompts must not hand them a confident-looking answer it has no basis for. Refusing to
-answer is the more useful output.
-
-**Scope, stated plainly:** p-values use the normal approximation rather than an exact
-t-distribution, which is anti-conservative for very small samples. The minimum sample gate
-is what makes that acceptable; it fires before any p-value is trusted. The aggregation
-query returns `STDDEV_SAMP` and per-arm counts so the decision is made from spread and
-sample size, not from means alone.
-
-**Quality is the metric that matters, and it has to come from you.** Cost, latency and
-error rate are all derivable from the call itself, and they are rarely why one prompt beats
-another. PromptWatch never sees model output (ADR-2), so it cannot judge an answer — the
-host application reports a score and the dashboard compares variants on it, using the same
-significance gate and the one direction where higher wins. See ADR-8.
-
-### ADR-7 — A Guessed Cost Is Labelled as a Guess
-
-**Decision:** Pricing is resolved by longest-prefix match against the request's model id.
-When nothing matches, the fallback rate is still applied but the trace is flagged
-`pricingUnknown`, and every aggregate that includes such a trace is rendered with a `~`
-prefix and an explicit "estimated" note.
-
-**Why:** Cost was previously derived from `response.model`, which the API returns as a
-dated snapshot id (`gpt-4o-mini-2024-07-18`) rather than the alias you requested. No
-pricing key matched, so every call silently fell through to the default rate — roughly 16x
-the true cost for `gpt-4o-mini`. The failure was invisible: the dashboard displayed a
-precise-looking dollar figure that was simply wrong, and the unit tests missed it because
-the mock echoed back the alias instead of a snapshot id.
-
-Two changes follow from that. Prices are resolved from the *requested* model, matching
-dated suffixes by prefix; and an unmatched model is surfaced rather than absorbed, because
-a wrong number presented confidently is worse than an acknowledged estimate. Adding a
-model to `packages/sdk/src/pricing.ts` removes the flag.
-
-### ADR-8 — Outcomes Keyed on a Client-Generated Id, Not a Foreign Key
-
-**Decision:** The SDK generates a UUID per call, hands it to the host application through
-`onTrace`, and stamps it on the trace. Outcomes are stored in their own table keyed on the
-same id, with **no foreign key** between them, and joined on that column when metrics are
-computed.
-
-**Why a client-generated id:** the database id is not known until the trace is written, and
-the trace is written asynchronously and in batches — long after the host application has
-moved on. Generating the id up front means it exists before the request even reaches
-OpenAI, so it can be captured next to the call site and used for a request that ends up
-failing.
-
-**Why `onTrace` fires before the OpenAI call:** the application usually needs to stash the
-id alongside its own request context, and by the time a response arrives that context is
-often gone. Firing early also makes the callback synchronous — it runs before the first
-`await` inside `create()` — so the id can be read immediately after the call expression and
-stays correct with many calls in flight. That ordering is a contract, and a test asserts it
-rather than leaving it to chance.
-
-**Why no foreign key:** traces are buffered and batched while outcomes are sent directly, so
-an outcome routinely arrives *before* the trace it belongs to. A foreign key would reject
-exactly the case the design expects. Both sides carry a unique `client_trace_id`; the join
-is one-to-one and therefore cannot inflate the operational aggregates, which a test checks.
-
-**Why a single 0..1 score:** one normalised number keeps variants comparable across prompts
-and keeps the significance machinery honest with a single test. Binary outcomes are 0 or 1;
-a star rating is rescaled. A short `label` records what was measured and is length-capped at
-the API boundary so it stays a tag rather than a channel for user content (ADR-2).
-
-**Trade-off, stated plainly:** PromptWatch cannot verify a score. A team that reports
-garbage gets a confident comparison of garbage. The alternative — inferring quality from
-model output — is the thing ADR-2 exists to forbid.
-
-### ADR-9 — Corrections
-
-Each entry below is a claim this project made and did not keep. They are recorded rather
-than quietly fixed, because the gap between the two is the most useful thing a reader can
-know about a codebase.
-
-| Claim | What was actually true | Now enforced by |
+| # | Decision | Summary |
 | --- | --- | --- |
-| "Real-time error rate telemetry" | The non-streaming path had no `try/catch`, so `status: "ERROR"` could never be produced. The dashboard's error rate was structurally 0%; the seed script's fake errors were the only ones ever seen. | `wrapOpenAI` traces both outcomes; `records an ERROR trace when the OpenAI call fails` |
-| "Real-time cost telemetry" | Cost was priced from `response.model`, a dated snapshot id no alias matched, so every call fell back to gpt-4o rates — ~16x too high for gpt-4o-mini. Unit tests missed it because the mock echoed the alias. | Longest-prefix resolution against the *requested* model; `prices against the requested model, not the dated snapshot echoed back` |
-| ADR-3: the await "can never add latency to the call the host application is waiting on" | It could. The non-streaming path awaited `/resolve` before returning, with no timeout, so a hanging backend hung the caller indefinitely. | Emission from the promise continuation plus `AbortSignal` timeouts; `returns to the caller without waiting for a hanging backend` |
-| ADR-1: polls are "jittered to avoid a synchronized thundering-herd" | `setInterval` with a fixed period. There was no jitter. | Self-rescheduling timeout with a jitter ratio |
-| "Deterministic A/B testing" | Nothing could stop a test, so a second demo run left two active tests for one prompt and the SDK cache picked whichever response arrived last. | `PATCH /api/ab-tests/[id]`, a 409 on a duplicate active test, and `allows exactly one active test when creates race` |
-| "The winner of each metric is highlighted automatically" | The winner was whichever average was lower, at any sample size. Three requests per arm produced a confident badge on noise. | ADR-6's significance gate; `refuses to call a winner below the minimum sample size` |
-| "Set `PROMPTWATCH_API_KEY` in `.env`" for a shared deployment | Compose never forwarded the variable, so following the instruction left auth disabled while appearing to enable it. | Explicit pass-through in `docker-compose.yml`; `docker-compose.prod.yml` refuses to start without it |
-| CI green | The lint step caught its own failure and echoed "Lint skipped", exiting 0. There was no linter in the repo at all. | ESLint plus a CI pipeline where every step can fail the build |
-| The advisory lock protects version assignment | It did, but it also serialised *every* resolve for a prompt name — including the unchanged-prompt case that runs on every LLM call — and Prisma's 2s transaction-start default turned contention into P2028 failures. Nothing tested it, so neither was visible. | A lock-free fast path for unchanged prompts, a single-statement insert under the lock, and `assigns unique consecutive versions under concurrent writes` |
+| 1 | [In-Memory `ABCache` over a Centralized Redis](docs/adr/001-in-memory-abcache-over-a-centralized-redis.md) | Each SDK instance holds its own in-memory `Map` of active A/B tests, refreshed on a periodic poll (default: every 30 seconds, jittered to avoid a… |
+| 2 | [Privacy-First Data Dropping](docs/adr/002-privacy-first-data-dropping.md) | The SDK inspects the outgoing message array for exactly one thing: the `role: "system"` entry. Everything else — `role: "user"` content and the… |
+| 3 | [Non-Blocking, Fire-and-Forget Telemetry](docs/adr/003-non-blocking-fire-and-forget-telemetry.md) | Neither the prompt-resolve call nor the trace-logging call is ever awaited before the real OpenAI request is dispatched. PromptWatch's own backend… |
+| 4 | [Opt-In Shared-Secret Auth, Not Multi-User Accounts](docs/adr/004-opt-in-shared-secret-auth-not-multi-user-accounts.md) | PromptWatch uses a single shared secret (`PROMPTWATCH_API_KEY`) that gates all backend API access. When the env var is unset or empty, auth is… |
+| 5 | [Transparent Streaming Support via Stream Wrapping](docs/adr/005-transparent-streaming-support-via-stream-wrapping.md) | Wrap the OpenAI `create()` response stream with `wrapStream` so that `include_usage` can be injected silently (the synthetic usage-only chunk is… |
+| 6 | [A Winner Requires Significance, Not Just a Lower Average](docs/adr/006-a-winner-requires-significance-not-just-a-lower-average.md) | The dashboard declares a winner for a metric only when both arms have at least 30 traces *and* the difference clears a two-sided test at α = 0.05… |
+| 7 | [A Guessed Cost Is Labelled as a Guess](docs/adr/007-a-guessed-cost-is-labelled-as-a-guess.md) | Pricing is resolved by longest-prefix match against the request's model id. When nothing matches, the fallback rate is still applied but the trace… |
+| 8 | [Outcomes Keyed on a Client-Generated Id, Not a Foreign Key](docs/adr/008-outcomes-keyed-on-a-client-generated-id-not-a-foreign-key.md) | The SDK generates a UUID per call, hands it to the host application through `onTrace`, and stamps it on the trace. Outcomes are stored in their… |
+| 9 | [Corrections](docs/adr/009-corrections.md) | Every claim this project made and did not keep, what was actually true, and the test that now guards it. |
+| 10 | [No Node Built-Ins in the SDK](docs/adr/010-no-node-built-ins-in-the-sdk.md) | The SDK imports nothing from `node:*`, so it runs on edge runtimes, Deno, Bun and the browser — the environments its own README recommended. |
 
-The last row is the one worth dwelling on: it was found by writing the database tests, not
-by reading the code. Two of these bugs existed *because* the test suite ran without a
-database and the mocks were kinder than reality.
+**[ADR-9](docs/adr/009-corrections.md) is the one to read first** if you are evaluating this repo: it lists every claim the project made and did not keep, what was actually true, and the test that now guards it.
