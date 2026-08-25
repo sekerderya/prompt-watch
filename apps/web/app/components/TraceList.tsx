@@ -9,6 +9,8 @@ interface TraceRow {
   version: number;
   variant: string | null;
   abTestId: number | null;
+  promptSource: string | null;
+  releaseId: number | null;
   status: string;
   errorType: string | null;
   latencyMs: number;
@@ -51,7 +53,7 @@ export default function TraceList({ promptName }: { promptName: string }) {
       if (before !== null) params.set("before", String(before));
       if (onlyErrors) params.set("status", "ERROR");
 
-      const res = await fetch(`/api/traces/list?${params}`);
+      const res = await fetch(`/api/traces?${params}`);
       if (!res.ok) throw new Error(String(res.status));
       const body = await res.json();
 
@@ -118,6 +120,7 @@ export default function TraceList({ promptName }: { promptName: string }) {
                 <tr>
                   <th>When</th>
                   <th>Version</th>
+                  <th>Prompt from</th>
                   <th>Result</th>
                   <th className="pw-num">Latency</th>
                   <th className="pw-num">Tokens</th>
@@ -134,6 +137,19 @@ export default function TraceList({ promptName }: { promptName: string }) {
                       {t.variant && (
                         <span className={`pw-badge pw-badge--${t.variant.toLowerCase()}`}>
                           {t.variant}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {t.promptSource === null ? (
+                        <span className="pw-subtle">—</span>
+                      ) : (
+                        <span className="pw-chip">
+                          {t.promptSource === "AB_TEST"
+                            ? "A/B test"
+                            : t.promptSource === "REGISTRY"
+                              ? `release #${t.releaseId ?? "?"}`
+                              : "app code"}
                         </span>
                       )}
                     </td>

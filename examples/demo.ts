@@ -73,6 +73,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Polls a condition instead of guessing how long something will take. */
+async function waitUntil(condition: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    await sleep(50);
+  }
+  return condition();
+}
+
 function line(): void {
   console.log("─".repeat(46));
 }
@@ -474,19 +484,39 @@ async function main(): Promise<void> {
   const promoteRes = await fetch(`${BACKEND_URL}/api/ab-tests/${createdTest.id}/promote`, {
     method: "PATCH",
     headers: authHeaders(),
-    body: JSON.stringify({ variant: winner }),
+    body: JSON.stringify({ variant: winner, actor: "demo script" }),
   });
 
-  if (!promoteRes.ok) {
+  // A repeat run finds the winner already released. That is a successful state,
+  // not a failure — treat it as one, or the demo skips its own punchline every
+  // time after the first.
+  const alreadyLive = promoteRes.status === 409;
+  if (alreadyLive) await promoteRes.body?.cancel();
+
+  if (!promoteRes.ok && !alreadyLive) {
     console.warn(`⚠ Could not promote (HTTP ${promoteRes.status}); skipping the rollout demo.`);
   } else {
-    const { release } = await promoteRes.json();
-    console.log(
-      `✅ Variant ${winner} promoted. "${PROMPT_NAME}" now serves v${
-        winner === "A" ? v1.version : v2.version
-      }, and the test was stopped.`
-    );
-    console.log(`   Reason recorded: ${release.reason}\n`);
+    if (alreadyLive) {
+      console.log(
+        `\u2139 Variant ${winner} (v${winner === "A" ? v1.version : v2.version}) was already ` +
+          `the released version from an earlier run.`
+      );
+      // Stop the test anyway; promotion would normally have done it.
+      await fetch(`${BACKEND_URL}/api/ab-tests/${createdTest.id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({ status: "STOPPED" }),
+      });
+    } else {
+      const { release } = await promoteRes.json();
+      console.log(
+        `\u2705 Variant ${winner} promoted. "${PROMPT_NAME}" now serves v${
+          winner === "A" ? v1.version : v2.version
+        }, and the test was stopped.`
+      );
+      console.log(`   Recorded as: ${release.reason} (by ${release.actor ?? "unattributed"})`);
+    }
+    console.log("");
 
     line();
     console.log("7️⃣  A CLIENT THAT FOLLOWS THE REGISTRY");
@@ -495,7 +525,14 @@ async function main(): Promise<void> {
     // A fresh client whose *code* still contains the losing prompt.
     const registryCache = new PromptCache();
     registryCache.start(BACKEND_URL, 2000, SDK_API_KEY);
-    await sleep(1200);
+
+    // Wait for the first poll to land rather than sleeping a fixed time. A cold
+    // backend can take seconds to answer its first request, and a demo that
+    // races that reports "local" and silently shows the opposite of its point.
+    const ready = await waitUntil(() => registryCache.get(PROMPT_NAME) !== undefined, 10_000);
+    if (!ready) {
+      console.warn("⚠ The registry did not answer in time; skipping the rollout demo.");
+    }
 
     let servedSource = "?";
     const followerClient = wrapOpenAI(useReal ? new OpenAI() : createMockClient(), {

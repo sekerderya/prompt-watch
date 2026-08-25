@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
-import { GET as listTraces } from "@/app/api/traces/list/route";
-import { POST as postTraces } from "@/app/api/traces/route";
+import { GET as listTraces, POST as postTraces } from "@/app/api/traces/route";
 import { POST as postOutcomes } from "@/app/api/outcomes/route";
 import { prisma } from "@/lib/prisma";
 import { assertTestDatabase, createPrompt, resetDatabase } from "./helpers";
@@ -16,7 +15,7 @@ function post(url: string, body: unknown): NextRequest {
 }
 
 function list(query: string) {
-  return listTraces(new NextRequest(`http://localhost:3000/api/traces/list?${query}`));
+  return listTraces(new NextRequest(`http://localhost:3000/api/traces?${query}`));
 }
 
 function trace(promptId: number, overrides: Record<string, unknown> = {}) {
@@ -31,7 +30,7 @@ function trace(promptId: number, overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("GET /api/traces/list", () => {
+describe("GET /api/traces", () => {
   beforeAll(assertTestDatabase);
   beforeEach(resetDatabase);
 
@@ -222,5 +221,69 @@ describe("GET /api/traces/list", () => {
   it("returns an empty page rather than failing for an unknown prompt", async () => {
     const body = await (await list("promptName=does-not-exist")).json();
     expect(body).toEqual({ traces: [], nextCursor: null });
+  });
+
+  it("records where each call's prompt came from", async () => {
+    const v1 = await createPrompt("support", 1);
+    const release = await prisma.promptRelease.create({
+      data: { promptName: "support", promptId: v1.id, source: "MANUAL" },
+    });
+
+    await postTraces(
+      post("http://localhost:3000/api/traces", [
+        trace(v1.id, { promptSource: "local" }),
+        trace(v1.id, { promptSource: "registry", releaseId: release.id }),
+        trace(v1.id, { promptSource: "ab-test" }),
+      ])
+    );
+
+    const body = await (await list("promptName=support")).json();
+    const sources = body.traces.map((t: { promptSource: string }) => t.promptSource);
+
+    expect(sources).toEqual(["AB_TEST", "REGISTRY", "LOCAL"]);
+    const served = body.traces.find((t: { promptSource: string }) => t.promptSource === "REGISTRY");
+    expect(served.releaseId).toBe(release.id);
+  });
+
+  it("answers whether a release actually reached any client", async () => {
+    // The question that made this column necessary: promote a version, then
+    // find out if anything is serving it.
+    const v1 = await createPrompt("support", 1);
+    const release = await prisma.promptRelease.create({
+      data: { promptName: "support", promptId: v1.id, source: "MANUAL" },
+    });
+    await postTraces(
+      post("http://localhost:3000/api/traces", [
+        trace(v1.id, { promptSource: "local" }),
+        trace(v1.id, { promptSource: "registry", releaseId: release.id }),
+      ])
+    );
+
+    const reached = await (await list(`releaseId=${release.id}`)).json();
+    expect(reached.traces).toHaveLength(1);
+
+    const bySource = await (await list("source=LOCAL")).json();
+    expect(bySource.traces).toHaveLength(1);
+  });
+
+  it("ignores a releaseId claimed by a call that was not registry-served", async () => {
+    const v1 = await createPrompt("support", 1);
+    const release = await prisma.promptRelease.create({
+      data: { promptName: "support", promptId: v1.id, source: "MANUAL" },
+    });
+
+    await postTraces(
+      post(
+        "http://localhost:3000/api/traces",
+        trace(v1.id, { promptSource: "local", releaseId: release.id })
+      )
+    );
+
+    // Otherwise a local call would look like the release had reached a client.
+    expect((await prisma.trace.findFirst())?.releaseId).toBeNull();
+  });
+
+  it("rejects an unknown source filter", async () => {
+    expect((await list("source=SOMEWHERE")).status).toBe(400);
   });
 });

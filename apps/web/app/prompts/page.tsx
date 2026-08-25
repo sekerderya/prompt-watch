@@ -5,6 +5,7 @@ import EmptyState from "../components/EmptyState";
 import PromptDiff from "../components/PromptDiff";
 import RangePicker, { DEFAULT_RANGE_DAYS } from "../components/RangePicker";
 import TraceList from "../components/TraceList";
+import { promptForOperator } from "@/lib/operator";
 
 interface PromptSummary {
   name: string;
@@ -51,6 +52,7 @@ interface Release {
   version: number;
   source: "AB_TEST_WINNER" | "MANUAL" | "ROLLBACK";
   reason: string | null;
+  actor: string | null;
   abTestId: number | null;
   createdAt: string;
 }
@@ -174,6 +176,7 @@ export default function PromptsPage() {
     setReleasePending(true);
     setReleaseMsg(null);
     const isRollback = liveRelease !== null && version < liveRelease.version;
+    const actor = promptForOperator();
     try {
       const res = await fetch("/api/releases", {
         method: "POST",
@@ -181,6 +184,7 @@ export default function PromptsPage() {
         body: JSON.stringify({
           promptId,
           source: isRollback ? "ROLLBACK" : "MANUAL",
+          actor,
           reason: isRollback
             ? `Rolled back to v${version} from v${liveRelease?.version}.`
             : `Promoted v${version} from the Prompts page.`,
@@ -390,7 +394,10 @@ export default function PromptsPage() {
                       >
                         <span className="pw-timeline__head">
                           <span className="pw-badge pw-badge--a">v{r.version}</span>
-                          <span className="pw-subtle">{SOURCE_LABEL[r.source]}</span>
+                          <span className="pw-subtle">
+                            {SOURCE_LABEL[r.source]}
+                            {r.actor ? ` by ${r.actor}` : ""}
+                          </span>
                           {r.id === liveReleaseId && (
                             <span className="pw-badge pw-badge--active">live</span>
                           )}

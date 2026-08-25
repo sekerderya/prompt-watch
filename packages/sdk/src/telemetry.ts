@@ -19,6 +19,10 @@ export interface TracePayload {
    * `onTrace` so it can attach an outcome to the same call later.
    */
   clientTraceId?: string;
+  /** Which of the three sources supplied the prompt that was actually sent. */
+  promptSource?: "local" | "registry" | "ab-test";
+  /** The release being served, when promptSource is "registry". */
+  releaseId?: number;
 }
 
 export interface TelemetryOptions {

@@ -7,13 +7,64 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791.svg?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
 
-> Drop-in, privacy-first observability for LLM system prompts — automatic versioning, statistically-gated A/B testing, and real-time cost/latency telemetry that never blocks your model calls.
+> Find out which of your LLM prompts is actually better, then ship it — without a deploy,
+> and without ever sending your users' data anywhere.
 
-PromptWatch wraps your existing OpenAI client with a single function call. From that point on, every system prompt is automatically hashed and versioned, requests can be routed through a live A/B test with sticky per-user bucketing, and every call's cost, latency, and outcome streams to a self-hosted dashboard — without ever touching your users' data, and without PromptWatch's own backend ever sitting on the path of your model call.
+**The problem.** Teams edit system prompts constantly and have almost no idea what the edits
+did. The change lives in a git diff, the effect lives in production, and nothing connects
+them. So prompts get changed on vibes, and reverted on vibes.
 
-Cost and latency come for free. Whether one prompt produces *better answers* is something only your application can know, so it reports a score per call and the dashboard compares variants on it — declaring a winner only when the difference is statistically significant. Then it ships that winner: promoting a version releases it to running SDK instances without a deploy, while the prompt in your code stays the fallback if PromptWatch is unreachable.
+**What this does**, as one loop:
 
-`wrapOpenAI` returns a proxy; the client you pass in is left untouched, and wrapping the same client twice is a no-op rather than a source of duplicate traces.
+1. **Watches.** `wrapOpenAI(client, …)` — one call. Every system prompt is hashed and
+   versioned automatically, and every request's cost, latency and failure category is
+   recorded. `role: "user"` content never leaves your process.
+2. **Asks.** Your application reports a score per call — a thumbs-up, a resolved ticket, a
+   grader's verdict. Cost and latency are free; quality is the thing only you can know.
+3. **Decides.** Two prompt versions run side by side with sticky per-user bucketing, and a
+   winner is declared **only** when the difference survives a significance test.
+4. **Ships.** Promoting the winner releases it to running SDK clients on their next poll.
+   Rollback is one click.
+
+```
+Quality Score   54.0% (n=87)   78.1% (n=73)  winner    p = 0.001
+Avg. Latency    291 ms         280 ms                  no significant difference (p = 0.205)
+Avg. Cost       $0.000035      $0.000034               no significant difference (p = 0.310)
+```
+
+That contrast is the whole point: the operational metrics say these two prompts are
+indistinguishable, and only the reported outcome shows one is meaningfully better.
+
+**If you are evaluating this repo, read two things.**
+[ADR-9](docs/adr/009-corrections.md) lists every claim this project made and failed to keep,
+what was actually true, and the test that now guards it — including an error rate that could
+only ever read 0%, costs inflated 16x, and a CI lint step that swallowed its own failure.
+[ADR-11](docs/adr/011-the-registry-serves-prompts-the-code-still-owns-them.md) covers the one
+feature that threatens an earlier decision, and how it is contained.
+
+**Try it in about a minute** — `npm run demo` walks the entire loop against a deterministic
+mock, so no API key is needed:
+
+```
+4️⃣  OUTCOME-DRIVEN QUALITY COMPARISON
+   160/160 calls, 160 outcomes recorded
+   Variant A: quality  54.0% (87 scored) · 290ms · $0.000035/call
+   Variant B: quality  78.1% (73 scored) · 280ms · $0.000034/call
+
+6️⃣  SHIPPING THE WINNER
+✅ Variant B promoted. "support-agent" now serves v2, and the test was stopped.
+
+7️⃣  A CLIENT THAT FOLLOWS THE REGISTRY
+→ Its code still says: "You are a courteous, professional customer suppo..."
+✅ Prompt actually sent came from: registry (no deploy involved)
+
+8️⃣  WHAT HAPPENS WHEN PROMPTWATCH IS DOWN
+✅ Registry unreachable → prompt came from: local. The application never notices.
+```
+
+<sub>Self-hosted · TypeScript · Next.js + PostgreSQL · 270 tests, incl. route handlers
+against a real Postgres in CI · no Node built-ins in the SDK, so it runs on edge runtimes
+too</sub>
 
 ## Quickstart
 
@@ -368,5 +419,6 @@ wrong. Each is a standalone document under [`docs/adr/`](docs/adr).
 | 10 | [No Node Built-Ins in the SDK](docs/adr/010-no-node-built-ins-in-the-sdk.md) | The SDK imports nothing from `node:*`, so it runs on edge runtimes, Deno, Bun and the browser — the environments its own README recommended. |
 | 11 | [The Registry Serves Prompts; the Code Still Owns Them](docs/adr/011-the-registry-serves-prompts-the-code-still-owns-them.md) | A released version overrides the prompt in your code, but never replaces it — the local text stays the contract and the fallback, so a backend outage cannot change application behaviour. |
 | 12 | [One Instrumentation, Two OpenAI APIs](docs/adr/012-one-instrumentation-two-openai-apis.md) | Chat Completions and the Responses API share every behaviour that matters; only their four genuine differences live in an adapter, and unverified shapes degrade rather than break. |
+| 13 | [Attribution Is Not Authentication](docs/adr/013-attribution-is-not-authentication.md) | Releases record a self-declared name, never a verified one — and ADR-4's threat model, written when the dashboard was read-only, is restated now that it can change production. |
 
 **[ADR-9](docs/adr/009-corrections.md) is the one to read first** if you are evaluating this repo: it lists every claim the project made and did not keep, what was actually true, and the test that now guards it.

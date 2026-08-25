@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { VariantBadge, StatusBadge } from "../components/Badge";
 import EmptyState from "../components/EmptyState";
+import { promptForOperator } from "@/lib/operator";
 import {
   MIN_SAMPLES_PER_VARIANT,
   decideVerdict,
@@ -328,12 +329,14 @@ export default function ABTestsPage() {
   async function promoteWinner(test: ABTest, variant: "A" | "B", metric: string, pValue: number) {
     setPromotePending(true);
     setFormMsg(null);
+    const actor = promptForOperator();
     try {
       const res = await fetch(`/api/ab-tests/${test.id}/promote`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           variant,
+          actor,
           reason: `Won "${test.name}" on ${metric} (p = ${pValue.toFixed(3)}).`,
         }),
       });

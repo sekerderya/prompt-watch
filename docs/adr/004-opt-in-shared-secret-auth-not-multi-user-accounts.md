@@ -12,6 +12,13 @@
 
 **Why Web Crypto API, not `node:crypto`:** Next.js Middleware runs on the Edge runtime where `node:crypto` is unavailable. `crypto.subtle.digest("SHA-256", ...)` works identically in Node, Edge, and browser contexts, keeping the auth logic portable and runtime-agnostic.
 
+**This threat model has since been outgrown, in part.** It was written when the dashboard
+could only be read. [ADR-11](011-the-registry-serves-prompts-the-code-still-owns-them.md)
+made it able to change which prompt a running production application sends, which is a
+materially different thing to protect with a single shared secret.
+[ADR-13](013-attribution-is-not-authentication.md) states what that now means, what bounds
+the damage, and the point at which a real identity provider stops being optional.
+
 **When to revisit:** If PromptWatch ever needs multi-tenant deployments (separate teams on the same backend, per-user audit logs, SSO/SAML/OIDC integration), the shared-secret model will need to be replaced with a proper identity provider. That is explicitly out of scope today — the architecture document marks this as a future decision point.
 
 **Note on session cookie:** The `pw_session` cookie carries the raw shared secret (`PROMPTWATCH_API_KEY`) directly — not a hashed value, not a separate session token. This is an explicit design choice for a single-operator, self-hosted tool: the credential itself IS the session value. It is protected by HttpOnly, Secure (in production), and SameSite=Lax flags. There is no additional session-layer middleware beyond the simple Bearer-cookie check in the auth middleware. For a one-person tool, this eliminates the complexity of a full session management system while still providing meaningful access control. Acceptable because the threat model is "protect from casual access on shared networks," not "isolate multi-tenant users."

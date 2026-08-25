@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ReleaseSource } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { variantComparison } from "@/lib/comparison";
-import { createRelease } from "@/lib/releases";
+import { createRelease, normalizeActor } from "@/lib/releases";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -29,6 +29,11 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const body = await request.json().catch(() => null);
     const variant = body?.variant;
     const reason = typeof body?.reason === "string" ? body.reason.trim() : null;
+
+    const actor = normalizeActor(body?.actor);
+    if (actor instanceof RangeError) {
+      return NextResponse.json({ error: actor.message }, { status: 400 });
+    }
 
     if (variant !== "A" && variant !== "B") {
       return NextResponse.json({ error: "variant must be A or B" }, { status: 400 });
@@ -64,6 +69,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
         `Won "${test.name}" as variant ${variant} (v${winner.version}).`,
       abTestId,
       evidence,
+      actor,
     });
 
     if (!release.ok) {

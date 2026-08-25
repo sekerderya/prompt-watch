@@ -354,20 +354,25 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
        * response the host application is waiting on.
        */
       const emitTrace = (metrics: TraceMetrics): void => {
-        const { traceMeta, resolvePromise } = decision;
+        const { traceMeta, resolvePromise, promptSource, published } = decision;
+        // Recorded on every trace so the backend can answer "did this release
+        // reach any client", which is otherwise unanswerable: the host
+        // application is the only thing that knows, and it is not asked twice.
+        const provenance = { promptSource, releaseId: published?.releaseId, clientTraceId };
+
         if (traceMeta) {
           telemetry.send({
             promptId: traceMeta.promptId,
             abTestId: traceMeta.abTestId ?? undefined,
             variant: traceMeta.variant ?? undefined,
-            clientTraceId,
+            ...provenance,
             ...metrics,
           });
           return;
         }
         if (resolvePromise) {
           void resolvePromise.then((resolved) => {
-            if (resolved) telemetry.send({ promptId: resolved.id, clientTraceId, ...metrics });
+            if (resolved) telemetry.send({ promptId: resolved.id, ...provenance, ...metrics });
           });
         }
       };

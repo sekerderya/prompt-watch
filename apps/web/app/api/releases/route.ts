@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ReleaseSource } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { createRelease, liveReleases } from "@/lib/releases";
+import { createRelease, liveReleases, normalizeActor } from "@/lib/releases";
 
 const MAX_REASON_LENGTH = 500;
 
@@ -23,6 +23,11 @@ export async function POST(request: NextRequest) {
     const reason = typeof body?.reason === "string" ? body.reason.trim() : null;
     const source = isSource(body?.source) ? body.source : ReleaseSource.MANUAL;
 
+    const actor = normalizeActor(body?.actor);
+    if (actor instanceof RangeError) {
+      return NextResponse.json({ error: actor.message }, { status: 400 });
+    }
+
     if (!Number.isInteger(promptId) || promptId <= 0) {
       return NextResponse.json({ error: "promptId is required" }, { status: 400 });
     }
@@ -40,7 +45,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await createRelease({ promptId, source, reason });
+    const result = await createRelease({ promptId, source, reason, actor });
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: result.status });
     }
@@ -77,6 +82,7 @@ export async function GET(request: NextRequest) {
         version: r.prompt.version,
         source: r.source,
         reason: r.reason,
+        actor: r.actor,
         abTestId: r.abTestId,
         evidence: r.evidence,
         createdAt: r.createdAt.toISOString(),

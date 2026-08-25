@@ -12,6 +12,16 @@ enum ABTestStatus {
   STOPPED
 }
 
+/// Where the prompt actually sent to the model came from.
+enum PromptSource {
+  /// The text in the caller's own code.
+  LOCAL
+  /// A version promoted in the dashboard (ADR-11).
+  REGISTRY
+  /// A variant assigned by a running A/B test.
+  AB_TEST
+}
+
 /// How a version came to be the one served.
 enum ReleaseSource {
   /// Promoted because it won an A/B test at significance.
@@ -107,6 +117,13 @@ model Trace {
   /// an outcome to this call later. Nullable: traces from SDK versions before
   /// outcomes existed do not have one.
   clientTraceId    String?     @unique @map("client_trace_id")
+  /// Which of the three prompt sources this call used. Without it the tool
+  /// cannot answer "did my release actually reach a client", which is the first
+  /// question anyone asks after promoting one.
+  promptSource     PromptSource? @map("prompt_source")
+  /// The release being served, when promptSource is REGISTRY.
+  release          PromptRelease? @relation(fields: [releaseId], references: [id])
+  releaseId        Int?          @map("release_id")
   createdAt        DateTime    @default(now()) @map("created_at")
 
   @@index([promptId, createdAt])
@@ -114,6 +131,11 @@ model Trace {
   // The dashboard's rollup filters on created_at alone, which the composite
   // index above cannot serve.
   @@index([createdAt])
+  // Serves the drill-down: newest calls for one prompt version. Without it that
+  // query sequentially scanned the whole table and sorted, which is the very
+  // problem keyset pagination was chosen to avoid.
+  @@index([promptId, id])
+  @@index([releaseId])
   @@map("traces")
 }
 
@@ -164,7 +186,12 @@ model PromptRelease {
   /// Snapshot of the comparison at the moment of promotion, so the record still
   /// explains itself after the underlying traces have aged out (retention).
   evidence   Json?
+  /// Self-declared name of whoever promoted this, captured by the dashboard.
+  /// Attribution, not authentication - see ADR-13.
+  actor      String?
   createdAt  DateTime      @default(now()) @map("created_at")
+
+  traces     Trace[]
 
   // Serves "what is live for this prompt" — the SDK's poll and every UI badge.
   @@index([promptName, createdAt])

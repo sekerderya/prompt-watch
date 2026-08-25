@@ -12,6 +12,26 @@ export interface LiveRelease {
   releasedAt: string;
 }
 
+/** Keeps a self-declared name a name rather than a paragraph. */
+export const MAX_ACTOR_LENGTH = 64;
+
+/**
+ * Normalises the self-declared operator name.
+ *
+ * Empty becomes null rather than an empty string, so "nobody said who" reads
+ * differently from "someone said their name was ''".
+ */
+export function normalizeActor(raw: unknown): string | null | RangeError {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string") return new RangeError("actor must be a string");
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  if (trimmed.length > MAX_ACTOR_LENGTH) {
+    return new RangeError(`actor must be at most ${MAX_ACTOR_LENGTH} characters`);
+  }
+  return trimmed;
+}
+
 interface LiveReleaseRow {
   release_id: number;
   prompt_name: string;
@@ -74,6 +94,11 @@ export interface CreateReleaseInput {
    * signature), and the alternative is spreading that cast across callers.
    */
   evidence?: unknown;
+  /**
+   * Self-declared name of whoever did this. Attribution, not authentication:
+   * with a single shared secret there is no identity to verify (ADR-13).
+   */
+  actor?: string | null;
 }
 
 export type CreateReleaseResult =
@@ -113,6 +138,7 @@ export async function createRelease(input: CreateReleaseInput): Promise<CreateRe
       reason: input.reason ?? null,
       abTestId: input.abTestId ?? null,
       evidence: (input.evidence ?? undefined) as Prisma.InputJsonValue | undefined,
+      actor: input.actor ?? null,
     },
   });
 

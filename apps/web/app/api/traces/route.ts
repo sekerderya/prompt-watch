@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma, TraceErrorType, TraceStatus } from "@prisma/client";
+import { Prisma, PromptSource, TraceErrorType, TraceStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { listTraces } from "@/lib/traceList";
 
 /** Guards against a single request trying to insert an unbounded number of rows. */
 const MAX_BATCH_SIZE = 500;
@@ -18,6 +19,8 @@ interface ParsedTrace {
   status: TraceStatus;
   errorType: TraceErrorType | null;
   clientTraceId: string | null;
+  promptSource: PromptSource | null;
+  releaseId: number | null;
 }
 
 function parseTrace(raw: unknown): ParsedTrace | string {
@@ -56,6 +59,23 @@ function parseTrace(raw: unknown): ParsedTrace | string {
     }
   }
 
+  // The SDK reports these in its own vocabulary; map rather than couple the
+  // wire format to the database enum.
+  const SOURCES: Record<string, PromptSource> = {
+    local: PromptSource.LOCAL,
+    registry: PromptSource.REGISTRY,
+    "ab-test": PromptSource.AB_TEST,
+  };
+  const rawSource = body.promptSource;
+  const promptSource =
+    typeof rawSource === "string" && rawSource in SOURCES ? SOURCES[rawSource] : null;
+
+  const rawReleaseId = body.releaseId;
+  const releaseId =
+    typeof rawReleaseId === "number" && Number.isInteger(rawReleaseId) && rawReleaseId > 0
+      ? rawReleaseId
+      : null;
+
   const nonNegative = (value: unknown): number => {
     const n = typeof value === "number" && Number.isFinite(value) ? value : 0;
     return n < 0 ? 0 : n;
@@ -74,6 +94,10 @@ function parseTrace(raw: unknown): ParsedTrace | string {
     errorType,
     // Joins this trace to an outcome the host application reports separately.
     clientTraceId: typeof clientTraceId === "string" ? clientTraceId : null,
+    promptSource,
+    // Only meaningful alongside REGISTRY; anything else would claim a call was
+    // served by a release when it was not.
+    releaseId: promptSource === PromptSource.REGISTRY ? releaseId : null,
   };
 }
 
@@ -124,6 +148,25 @@ export async function POST(request: NextRequest) {
       );
     }
     console.error("create trace failed:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+/**
+ * Individual calls, newest first.
+ *
+ * Every other endpoint aggregates. Aggregates answer "how is this prompt
+ * doing"; they cannot answer "what happened to that one request that took four
+ * seconds", which is the question anyone actually debugging is asking.
+ */
+export async function GET(request: NextRequest) {
+  try {
+    return NextResponse.json(await listTraces(request.nextUrl.searchParams));
+  } catch (error) {
+    if (error instanceof RangeError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    console.error("list traces failed:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
