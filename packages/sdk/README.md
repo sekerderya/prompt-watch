@@ -27,8 +27,25 @@ const res = await client.chat.completions.create({
 instance can still be used unwrapped, and wrapping an already-wrapped client is a no-op
 rather than a source of duplicate traces.
 
-Only `chat.completions.create` is intercepted; every other property passes straight
-through to the underlying client.
+Both `chat.completions.create` and `responses.create` are intercepted, and instrumented
+identically — the prompt lives in `messages[role:"system"]` for one and `instructions` for
+the other, and everything downstream is the same code:
+
+```ts
+await client.responses.create({
+  model: "gpt-4o-mini",
+  instructions: "You are a helpful assistant.",
+  input: "Hello",
+});
+```
+
+Every other property passes straight through to the underlying client, and a client from an
+`openai` release without a `responses` property is left untouched.
+
+One asymmetry is deliberate: on Chat Completions the wrapper asks for streaming usage and
+hides the extra chunk that produces, while on the Responses API it injects nothing and
+withholds nothing. See ADR-12 — the more intrusive behaviour is only used where it has been
+verified against a live API.
 
 ## What is sent, and what is not
 

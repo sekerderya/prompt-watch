@@ -33,7 +33,7 @@ Then open **http://localhost:3000**. Three pages, updating as the demo runs:
 | Page | What it shows |
 | --- | --- |
 | **Dashboard** | Cost, request volume, error rate and reported quality across every prompt |
-| **Prompts** | Every tracked prompt, its version history, a word-level diff between any two versions, per-version metrics, a breakdown of what its failures actually were, and which version is released (with one-click rollback) |
+| **Prompts** | Every tracked prompt, its version history, a word-level diff between any two versions, per-version metrics, a breakdown of what its failures actually were, which version is released (with one-click rollback), and a paged list of individual calls |
 | **A/B Tests** | Variant comparison with a winner declared only when the difference is statistically significant — and a button to ship it |
 
 ### Step-by-step
@@ -62,6 +62,36 @@ CI runs all of these plus a production image build against a throwaway Postgres 
 and every one of them can fail the build.
 
 **Authentication (optional):** By default the backend runs with auth DISABLED (no `PROMPTWATCH_API_KEY` set), so the Quickstart and demo work out of the box. For any shared or internet-facing deployment, set `PROMPTWATCH_API_KEY` in `.env` — `docker-compose.yml` passes it into the backend container, which then requires `Authorization: Bearer <key>` on all API routes. The SDK attaches the key automatically when you pass `apiKey` to `wrapOpenAI()`.
+
+## Supported APIs
+
+Both OpenAI interfaces are instrumented, and identically — the same versioning, A/B
+substitution, registry serving, error categories, cost accounting and outcome correlation
+apply to each:
+
+```ts
+// Chat Completions: the prompt is the role:"system" message
+await client.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [{ role: "system", content: PROMPT }, { role: "user", content: question }],
+});
+
+// Responses: the prompt is `instructions`
+await client.responses.create({
+  model: "gpt-4o-mini",
+  instructions: PROMPT,
+  input: question,
+});
+```
+
+The two differ in four places — where the prompt lives, what the token fields are called,
+where streaming usage appears, and whether usage has to be requested. Those four sit in an
+adapter table; everything else is one code path, so a fix to the error path is a fix to
+both. [ADR-12](docs/adr/012-one-instrumentation-two-openai-apis.md) covers what is verified
+against the SDK's own type declarations and what is not verified against the live API,
+along with how the implementation degrades if a shape turns out to be wrong.
+
+A client from an `openai` release with no `responses` property is left untouched.
 
 ## Reporting outcomes
 
@@ -190,6 +220,14 @@ Both variables are required — compose refuses to start without them, so a depl
 fails. It is deliberately unauthenticated — an orchestrator cannot present a bearer token,
 and a health check that answers 401 always reads as unhealthy. Both the production image
 and `docker-compose.prod.yml` wire it as their container healthcheck.
+
+**Drilling in.** Aggregates answer "how is this prompt doing"; they cannot answer "what
+happened to the request that took four seconds". The Prompts page ends with a paged list of
+individual calls — timing, tokens, cost, which version ran, the failure category and the
+reported score — filterable to failures only. Pagination is keyset (`before=<id>`) rather
+than offset, so a page does not get slower as you go back and rows arriving mid-scroll
+cannot duplicate or drop entries. There is nothing deeper to open: a trace never holds
+content (ADR-2), so this is the whole of what a single call can say.
 
 **Retention.** An observability tool writes a row per model call. At ten calls a second
 that is ~860k rows a day, under a dashboard that scans the table for every rollup, so
@@ -329,5 +367,6 @@ wrong. Each is a standalone document under [`docs/adr/`](docs/adr).
 | 9 | [Corrections](docs/adr/009-corrections.md) | Every claim this project made and did not keep, what was actually true, and the test that now guards it. |
 | 10 | [No Node Built-Ins in the SDK](docs/adr/010-no-node-built-ins-in-the-sdk.md) | The SDK imports nothing from `node:*`, so it runs on edge runtimes, Deno, Bun and the browser — the environments its own README recommended. |
 | 11 | [The Registry Serves Prompts; the Code Still Owns Them](docs/adr/011-the-registry-serves-prompts-the-code-still-owns-them.md) | A released version overrides the prompt in your code, but never replaces it — the local text stays the contract and the fallback, so a backend outage cannot change application behaviour. |
+| 12 | [One Instrumentation, Two OpenAI APIs](docs/adr/012-one-instrumentation-two-openai-apis.md) | Chat Completions and the Responses API share every behaviour that matters; only their four genuine differences live in an adapter, and unverified shapes degrade rather than break. |
 
 **[ADR-9](docs/adr/009-corrections.md) is the one to read first** if you are evaluating this repo: it lists every claim the project made and did not keep, what was actually true, and the test that now guards it.
