@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import EmptyState from "../components/EmptyState";
 import PromptDiff from "../components/PromptDiff";
 import RangePicker, { DEFAULT_RANGE_DAYS } from "../components/RangePicker";
+import TraceList from "../components/TraceList";
 
 interface PromptSummary {
   name: string;
@@ -463,6 +464,8 @@ export default function PromptsPage() {
                   <pre className="pw-diff">{versions[0].promptText}</pre>
                 </>
               )}
+
+              <TraceList promptName={selected} />
             </>
           )}
         </section>

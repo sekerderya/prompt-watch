@@ -813,3 +813,10 @@ code {
   background: var(--pw-surface-2);
   border: 1px solid var(--pw-border);
 }
+
+/* Toggle button in its pressed state (e.g. "failures only"). */
+.pw-btn--on {
+  background: var(--pw-surface-2);
+  border-color: var(--pw-primary);
+  color: var(--pw-primary);
+}
