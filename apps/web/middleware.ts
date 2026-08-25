@@ -6,6 +6,9 @@ const PUBLIC_PATHS = [
   "/login",
   "/api/auth/login",
   "/api/auth/logout",
+  // Orchestrators and uptime monitors cannot send a bearer token, and a health
+  // check that answers 401 always reads as unhealthy.
+  "/api/health",
   "/favicon.ico",
   "/icon.svg",
 ];

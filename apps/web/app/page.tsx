@@ -13,6 +13,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import EmptyState from "./components/EmptyState";
+import RangePicker, { DEFAULT_RANGE_DAYS } from "./components/RangePicker";
 
 interface SummaryRow {
   day: string;
@@ -31,18 +32,19 @@ interface ChartRow {
   errorRate: number;
 }
 
-const DAYS = 7;
-
 const axisTick = { fill: "var(--pw-text-muted)", fontSize: 12, fontFamily: "var(--pw-font-mono)" };
 
 export default function Home() {
+  const [days, setDays] = useState(DEFAULT_RANGE_DAYS);
   const [rows, setRows] = useState<SummaryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/metrics/summary?days=${DAYS}`)
+    setLoading(true);
+    setFailed(false);
+    fetch(`/api/metrics/summary?days=${days}`)
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -66,7 +68,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [days]);
 
   if (loading) {
     return <div className="pw-loading">Loading metrics…</div>;
@@ -119,11 +121,11 @@ export default function Home() {
         <div>
           <h1 className="pw-h1">Dashboard</h1>
           <p className="pw-page-head__desc">
-            Aggregate cost, request volume and error rate across all versioned prompts tracked
-            by the SDK.
+            Aggregate cost, request volume, error rate and reported quality across all
+            versioned prompts tracked by the SDK.
           </p>
         </div>
-        <span className="pw-chip">Last {DAYS} days</span>
+        <RangePicker days={days} onChange={setDays} />
       </div>
 
       <div className="pw-kpis">
@@ -135,7 +137,7 @@ export default function Home() {
           <span className="pw-subtle">
             {totalUnpriced > 0
               ? `estimated — ${totalUnpriced} trace(s) used fallback pricing`
-              : `USD, last ${DAYS} days`}
+              : `USD, last ${days} days`}
           </span>
         </div>
         <div className="pw-kpi">

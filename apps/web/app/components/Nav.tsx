@@ -8,6 +8,7 @@ export default function Nav() {
 
   const links = [
     { href: "/", label: "Dashboard" },
+    { href: "/prompts", label: "Prompts" },
     { href: "/ab-tests", label: "A/B Tests" },
   ];
 

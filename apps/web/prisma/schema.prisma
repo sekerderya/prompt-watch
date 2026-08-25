@@ -17,6 +17,22 @@ enum TraceStatus {
   ERROR
 }
 
+/// Coarse failure categories. Derived by the SDK from the HTTP status and the
+/// error's class name only — never from a message, so no user content can reach
+/// telemetry through an error string (ADR-2).
+enum TraceErrorType {
+  RATE_LIMIT
+  TIMEOUT
+  AUTH
+  INVALID_REQUEST
+  NOT_FOUND
+  CONTENT_FILTER
+  SERVER
+  NETWORK
+  CANCELLED
+  UNKNOWN
+}
+
 model Prompt {
   id         Int      @id @default(autoincrement())
   name       String
@@ -72,6 +88,10 @@ model Trace {
   /// guessed cost is indistinguishable from a measured one.
   pricingUnknown   Boolean     @default(false) @map("pricing_unknown")
   status           TraceStatus
+  /// Why the call failed. Null for successful calls. "Error rate: 5%" cannot be
+  /// acted on without knowing whether it is throttling, an expired key or an
+  /// upstream outage.
+  errorType        TraceErrorType? @map("error_type")
   /// Client-generated id, echoed back to the host application so it can attach
   /// an outcome to this call later. Nullable: traces from SDK versions before
   /// outcomes existed do not have one.

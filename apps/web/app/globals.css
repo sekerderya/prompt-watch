@@ -584,3 +584,159 @@ a {
   font-weight: 400;
   font-size: 11px;
 }
+
+/* ---------- Time range selector ---------- */
+
+.pw-range {
+  display: inline-flex;
+  border: 1px solid var(--pw-border);
+  border-radius: var(--pw-radius-sm);
+  overflow: hidden;
+}
+
+.pw-range__option {
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--pw-text-muted);
+  border: 0;
+  border-right: 1px solid var(--pw-border);
+  font-family: var(--pw-font-mono);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.pw-range__option:last-child {
+  border-right: 0;
+}
+
+.pw-range__option:hover {
+  background: var(--pw-surface-2);
+  color: var(--pw-text);
+}
+
+.pw-range__option--active {
+  background: var(--pw-primary);
+  color: #0b1220;
+  font-weight: 600;
+}
+
+/* ---------- Data tables (prompts, versions) ---------- */
+
+/* Wide tables scroll inside the card rather than widening the page. */
+.pw-table-scroll {
+  overflow-x: auto;
+}
+
+.pw-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.pw-table th {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--pw-border);
+  color: var(--pw-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.pw-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--pw-border);
+  vertical-align: top;
+}
+
+.pw-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.pw-table .pw-num {
+  text-align: right;
+  font-family: var(--pw-font-mono);
+  white-space: nowrap;
+}
+
+.pw-table__row {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.pw-table__row:hover {
+  background: var(--pw-surface-2);
+}
+
+.pw-table__row--active {
+  background: rgba(90, 162, 255, 0.08);
+}
+
+.pw-linkish {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--pw-primary);
+  font-family: var(--pw-font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* ---------- Prompt version diff ---------- */
+
+.pw-diff {
+  margin-top: var(--pw-space-3);
+  padding: var(--pw-space-4);
+  background: var(--pw-surface-2);
+  border: 1px solid var(--pw-border);
+  border-radius: var(--pw-radius-sm);
+  font-family: var(--pw-font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.pw-diff__added {
+  background: rgba(45, 212, 167, 0.18);
+  color: var(--pw-success);
+  border-radius: 3px;
+}
+
+.pw-diff__removed {
+  background: rgba(249, 112, 127, 0.16);
+  color: var(--pw-danger);
+  text-decoration: line-through;
+  border-radius: 3px;
+}
+
+.pw-diff-block {
+  margin-top: var(--pw-space-5);
+}
+
+/* ---------- Error cause breakdown ---------- */
+
+.pw-error-breakdown {
+  margin-top: var(--pw-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pw-space-2);
+}
+
+.pw-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pw-space-2);
+}
+
+.pw-chip--danger {
+  color: var(--pw-danger);
+  background: rgba(249, 112, 127, 0.1);
+  border-color: rgba(249, 112, 127, 0.3);
+}

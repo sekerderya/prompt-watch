@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma, TraceStatus } from "@prisma/client";
+import { Prisma, TraceErrorType, TraceStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /** Guards against a single request trying to insert an unbounded number of rows. */
@@ -16,6 +16,7 @@ interface ParsedTrace {
   costUsd: number;
   pricingUnknown: boolean;
   status: TraceStatus;
+  errorType: TraceErrorType | null;
   clientTraceId: string | null;
 }
 
@@ -32,6 +33,17 @@ function parseTrace(raw: unknown): ParsedTrace | string {
     return "latencyMs must be a non-negative integer";
   }
   if (status !== "SUCCESS" && status !== "ERROR") return "status must be SUCCESS or ERROR";
+
+  // Unknown categories are coerced rather than rejected: a newer SDK inventing
+  // one must not make a whole batch of telemetry unwritable.
+  let errorType: TraceErrorType | null = null;
+  if (status === "ERROR") {
+    const candidate = body.errorType;
+    errorType =
+      typeof candidate === "string" && candidate in TraceErrorType
+        ? (candidate as TraceErrorType)
+        : TraceErrorType.UNKNOWN;
+  }
 
   // Optional: only SDK versions that support outcomes send one.
   const clientTraceId = body.clientTraceId;
@@ -59,6 +71,7 @@ function parseTrace(raw: unknown): ParsedTrace | string {
     costUsd: nonNegative(body.costUsd),
     pricingUnknown: body.pricingUnknown === true,
     status: status as TraceStatus,
+    errorType,
     // Joins this trace to an outcome the host application reports separately.
     clientTraceId: typeof clientTraceId === "string" ? clientTraceId : null,
   };
