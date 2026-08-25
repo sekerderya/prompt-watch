@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:db": "prisma migrate deploy --schema=./prisma/schema.prisma && vitest run --config vitest.db.config.mts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

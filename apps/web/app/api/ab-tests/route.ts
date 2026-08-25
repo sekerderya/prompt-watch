@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ABTestStatus } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, LOCKED_TRANSACTION_OPTIONS } from "@/lib/prisma";
 
 function isABTestStatus(value: string): value is ABTestStatus {
   return value === "ACTIVE" || value === "STOPPED";
@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
           },
         }),
       };
-    });
+    }, LOCKED_TRANSACTION_OPTIONS);
 
     // The SDK caches one active test per prompt name; a second one would make
     // which variant a user sees depend on response ordering.

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, LOCKED_TRANSACTION_OPTIONS } from "@/lib/prisma";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -69,7 +69,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
             data: { status: "ACTIVE", endedAt: null },
           }),
         };
-      });
+      }, LOCKED_TRANSACTION_OPTIONS);
 
       if ("conflict" in updated && updated.conflict) {
         return NextResponse.json(

@@ -10,15 +10,33 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
+    # A throwaway Postgres so the route handlers can be exercised against a real
+    # database. Unit tests alone cannot reach the advisory locks, the enum
+    # constraints or the outcome join — the places bugs actually hid.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: promptwatch_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
-      # Prisma needs a connection string to generate the client, even though
-      # these tests do not open a connection.
-      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      # The database tests refuse to run unless the database name ends in
+      # "_test", so this cannot be pointed at anything real by accident.
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/promptwatch_test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: npm
@@ -44,8 +62,11 @@ jobs:
       - name: Run SDK tests
         run: npm run test --workspace=packages/sdk
 
-      - name: Run web tests
+      - name: Run web unit tests
         run: npm run test --workspace=apps/web
+
+      - name: Run database tests
+        run: npm run test:db --workspace=apps/web
 
       - name: Build full project
         run: npm run build

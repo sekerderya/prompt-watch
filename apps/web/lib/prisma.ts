@@ -13,3 +13,15 @@ const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 export const prisma: PrismaClient = globalForPrisma.prisma ?? new PrismaClient();
 
 globalForPrisma.prisma = prisma;
+
+/**
+ * Settings for the transactions that take a `pg_advisory_xact_lock`.
+ *
+ * Those transactions queue behind each other while holding a pool connection,
+ * so Prisma's default 2-second wait to *start* a transaction is too short: a
+ * burst of concurrent writes for the same prompt made later requests fail with
+ * P2028 ("Unable to start a transaction in the given time") instead of waiting
+ * their turn. The work inside each lock is a single round trip; the wait is the
+ * only thing that needed room.
+ */
+export const LOCKED_TRANSACTION_OPTIONS = { maxWait: 15_000, timeout: 20_000 };
