@@ -1,13 +1,13 @@
-import { randomUUID } from "node:crypto";
-
 import OpenAI from "openai";
 
 import { sha256 } from "./hash";
-import { resolvePricing } from "./pricing";
+import { resolvePricing, type ModelPricing } from "./pricing";
 import { ABCache, assignVariant, type ABTestConfig } from "./abTesting";
 import { TelemetryClient } from "./telemetry";
 import { wrapStream, type StreamOutcome } from "./streamWrapper";
 import { requestJson } from "./http";
+import { randomId } from "./random";
+import { classifyError, type TraceErrorType } from "./errorType";
 
 /**
  * Identifies one traced call, handed to the host application while the call is
@@ -45,6 +45,14 @@ export interface WrapOpenAIOptions {
    * outcome can be recorded for a request that ends up failing.
    */
   onTrace?: (handle: TraceHandle) => void;
+  /**
+   * Extra or corrected model prices, merged over the built-in table.
+   *
+   * Provider prices change faster than this package is republished, and a model
+   * the table does not know is otherwise billed at the fallback rate and flagged
+   * as an estimate. This is the escape hatch that does not require a fork.
+   */
+  pricing?: Record<string, ModelPricing>;
 }
 
 interface ResolveResponse {
@@ -83,14 +91,16 @@ interface TraceMetrics {
   costUsd: number;
   pricingUnknown: boolean;
   status: "SUCCESS" | "ERROR";
+  errorType?: TraceErrorType;
 }
 
 function usageCost(
   model: string | undefined,
-  usage: { prompt_tokens?: number; completion_tokens?: number } | undefined
+  usage: { prompt_tokens?: number; completion_tokens?: number } | undefined,
+  overrides?: Record<string, ModelPricing>
 ): { costUsd: number; pricingUnknown: boolean } {
   if (!usage) return { costUsd: 0, pricingUnknown: false };
-  const { pricing, unknown } = resolvePricing(model);
+  const { pricing, unknown } = resolvePricing(model, overrides);
   const promptTokens = usage.prompt_tokens ?? 0;
   const completionTokens = usage.completion_tokens ?? 0;
   return {
@@ -144,6 +154,7 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
 
   const { promptName, backendUrl, getDistinctId, apiKey, backendTimeoutMs, onError, onTrace } =
     options;
+  const pricingOverrides = options.pricing;
   const cache = options.cache ?? getOrCreateCache(backendUrl, apiKey);
   const telemetry =
     options.telemetry ??
@@ -202,7 +213,7 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
     // Generated here rather than by the database so the host application can
     // hold it before the call even reaches OpenAI, and so an outcome can be
     // recorded for a request that ultimately fails.
-    const clientTraceId = randomUUID();
+    const clientTraceId = randomId();
     if (onTrace) {
       try {
         onTrace({
@@ -270,6 +281,7 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
           costUsd: 0,
           pricingUnknown: false,
           status: "ERROR",
+          errorType: classifyError(err),
         });
         throw err;
       }
@@ -277,11 +289,12 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
       const finish = (
         status: "SUCCESS" | "ERROR",
         usage: any,
-        firstChunkAt: number | undefined
+        firstChunkAt: number | undefined,
+        error?: unknown
       ): void => {
         // Latency is time-to-first-chunk, which is what a streaming UI feels.
         const latencyMs = (firstChunkAt ?? Date.now()) - streamStartedAt;
-        const { costUsd, pricingUnknown } = usageCost(requestedModel, usage);
+        const { costUsd, pricingUnknown } = usageCost(requestedModel, usage, pricingOverrides);
         emitTrace({
           latencyMs,
           promptTokens: usage?.prompt_tokens ?? 0,
@@ -289,6 +302,7 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
           costUsd,
           pricingUnknown,
           status,
+          errorType: status === "ERROR" ? classifyError(error) : undefined,
         });
       };
 
@@ -296,7 +310,7 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
         rawStream,
         injectedIncludeUsage,
         (outcome: StreamOutcome) => finish("SUCCESS", outcome.usage, outcome.firstChunkAt),
-        (_err, firstChunkAt) => finish("ERROR", undefined, firstChunkAt)
+        (err, firstChunkAt) => finish("ERROR", undefined, firstChunkAt, err)
       ) as any;
     }
 
@@ -315,13 +329,18 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
         costUsd: 0,
         pricingUnknown: false,
         status: "ERROR",
+        errorType: classifyError(err),
       });
       throw err;
     }
 
     const latencyMs = Date.now() - startedAt;
     const usage = response?.usage;
-    const { costUsd, pricingUnknown } = usageCost(requestedModel ?? response?.model, usage);
+    const { costUsd, pricingUnknown } = usageCost(
+      requestedModel ?? response?.model,
+      usage,
+      pricingOverrides
+    );
 
     // Emitted even when usage is absent: latency and success/failure are still
     // real data, and a missing usage block should not erase the whole call.

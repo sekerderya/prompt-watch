@@ -1,8 +1,13 @@
-export { sha256 } from "./hash";
+export { sha256, sha256Words } from "./hash";
+export { randomId } from "./random";
 export { DEFAULT_PRICING, MODEL_PRICING, resolvePricing } from "./pricing";
 export type { ModelPricing, PricingResolution } from "./pricing";
+export { classifyError } from "./errorType";
+export type { TraceErrorType } from "./errorType";
 export { wrapOpenAI } from "./wrapOpenAI";
 export type { WrapOpenAIOptions, TraceHandle } from "./wrapOpenAI";
+export { createPromptWatch } from "./promptWatch";
+export type { PromptWatch, PromptWatchOptions, WrapOptions } from "./promptWatch";
 export { ABCache, assignVariant } from "./abTesting";
 export type { ABTestConfig, ABCacheOptions, VariantAssignment } from "./abTesting";
 export { TelemetryClient } from "./telemetry";

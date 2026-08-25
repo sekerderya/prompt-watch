@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-
+import { sha256Words } from "./hash";
+import { randomId } from "./random";
 import { requestJson } from "./http";
 
 export interface ABTestConfig {
@@ -18,10 +18,20 @@ export interface VariantAssignment {
   promptText: string;
 }
 
+/**
+ * Deterministic bucketing: the same test and distinct id always land in the
+ * same variant, on any machine, without coordination.
+ *
+ * Without a distinct id there is nothing stable to hash, so the caller gets an
+ * effectively random bucket per call. That is correct for genuinely anonymous
+ * traffic but means the assignment is no longer sticky — pass `getDistinctId`
+ * whenever a stable per-user identity exists.
+ */
 export function assignVariant(test: ABTestConfig, distinctId?: string): VariantAssignment {
-  const key = distinctId ?? randomUUID();
-  const hash = createHash("sha256").update(`${test.id}:${key}`).digest();
-  const bucket = hash.readUInt32BE(0) % 100;
+  const key = distinctId ?? randomId();
+  // First 32 bits of the digest, big-endian — the same value the previous
+  // node:crypto implementation produced, so existing assignments do not shift.
+  const bucket = sha256Words(`${test.id}:${key}`)[0] % 100;
   const variant: "A" | "B" = bucket < test.splitPercent ? "A" : "B";
   return {
     variant,

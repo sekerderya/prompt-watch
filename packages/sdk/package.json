@@ -1,8 +1,25 @@
 {
   "name": "@promptwatch/sdk",
   "version": "0.1.0",
-  "private": true,
+  "description": "Drop-in observability, versioning and A/B testing for LLM system prompts.",
+  "keywords": [
+    "llm",
+    "openai",
+    "observability",
+    "prompt",
+    "ab-testing",
+    "telemetry"
+  ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sekerderya/prompt-watch.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/sekerderya/prompt-watch#readme",
+  "bugs": {
+    "url": "https://github.com/sekerderya/prompt-watch/issues"
+  },
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -13,9 +30,17 @@
       "require": "./dist/index.js"
     }
   },
+  "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup",
     "test": "vitest run"

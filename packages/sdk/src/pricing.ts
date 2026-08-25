@@ -37,10 +37,12 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "gpt-3.5-turbo": { promptPricePer1k: 0.0005, completionPricePer1k: 0.0015 },
 };
 
-/** Table keys ordered longest-first so "gpt-4o-mini" wins over "gpt-4o". */
-const PRICING_KEYS_BY_SPECIFICITY = Object.keys(MODEL_PRICING).sort(
-  (a, b) => b.length - a.length
-);
+/** Longest-first so "gpt-4o-mini" wins over "gpt-4o". */
+function keysBySpecificity(table: Record<string, ModelPricing>): string[] {
+  return Object.keys(table).sort((a, b) => b.length - a.length);
+}
+
+const DEFAULT_KEYS = keysBySpecificity(MODEL_PRICING);
 
 /**
  * Resolve pricing for a model id, tolerating dated snapshot suffixes.
@@ -48,12 +50,24 @@ const PRICING_KEYS_BY_SPECIFICITY = Object.keys(MODEL_PRICING).sort(
  *   "gpt-4o-mini"            -> exact match
  *   "gpt-4o-mini-2024-07-18" -> prefix match on "gpt-4o-mini"
  *   "o3-pro"                 -> unknown: true, DEFAULT_PRICING
+ *
+ * `overrides` lets a host application price models the built-in table does not
+ * know, or correct one whose price has changed, without forking the SDK.
+ * Provider prices move faster than this package will be republished.
  */
-export function resolvePricing(model: string | undefined | null): PricingResolution {
+export function resolvePricing(
+  model: string | undefined | null,
+  overrides?: Record<string, ModelPricing>
+): PricingResolution {
   if (typeof model === "string" && model.length > 0) {
-    for (const key of PRICING_KEYS_BY_SPECIFICITY) {
+    const hasOverrides = overrides !== undefined && Object.keys(overrides).length > 0;
+    const table = hasOverrides ? { ...MODEL_PRICING, ...overrides } : MODEL_PRICING;
+    // An override wins over a built-in entry of the same specificity.
+    const keys = hasOverrides ? keysBySpecificity(table) : DEFAULT_KEYS;
+
+    for (const key of keys) {
       if (model === key || model.startsWith(`${key}-`)) {
-        return { pricing: MODEL_PRICING[key], unknown: false, matchedKey: key };
+        return { pricing: table[key], unknown: false, matchedKey: key };
       }
     }
   }

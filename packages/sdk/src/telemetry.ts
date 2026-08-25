@@ -1,4 +1,5 @@
 import { HttpError, requestJson } from "./http";
+import type { TraceErrorType } from "./errorType";
 
 export interface TracePayload {
   promptId: number;
@@ -11,6 +12,8 @@ export interface TracePayload {
   /** True when costUsd is a fallback guess because the model was not in the pricing table. */
   pricingUnknown?: boolean;
   status: "SUCCESS" | "ERROR";
+  /** Coarse failure category; only meaningful when status is ERROR. */
+  errorType?: TraceErrorType;
   /**
    * Client-generated id for this call, handed to the host application through
    * `onTrace` so it can attach an outcome to the same call later.
