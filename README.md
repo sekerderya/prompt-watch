@@ -41,7 +41,8 @@ indistinguishable, and only the reported outcome shows one is meaningfully bette
 **If you are evaluating this repo, read two things.**
 [ADR-9](docs/adr/009-corrections.md) lists every claim this project made and failed to keep,
 what was actually true, and the test that now guards it — including an error rate that could
-only ever read 0%, costs inflated 16x, and a CI lint step that swallowed its own failure.
+only ever read 0%, costs inflated 16x, a CI lint step that swallowed its own failure, and one
+entry that is still open because its fix is a feature rather than a patch.
 [ADR-11](docs/adr/011-the-registry-serves-prompts-the-code-still-owns-them.md) covers the one
 feature that threatens an earlier decision, and how it is contained.
 
@@ -466,11 +467,11 @@ wrong. Each is a standalone document under [`docs/adr/`](docs/adr).
 | 6 | [A Winner Requires Significance, Not Just a Lower Average](docs/adr/006-a-winner-requires-significance-not-just-a-lower-average.md) | The dashboard declares a winner for a metric only when both arms have at least 30 traces *and* the difference clears a two-sided test at α = 0.05… |
 | 7 | [A Guessed Cost Is Labelled as a Guess](docs/adr/007-a-guessed-cost-is-labelled-as-a-guess.md) | Pricing is resolved by longest-prefix match against the request's model id. When nothing matches, the fallback rate is still applied but the trace… |
 | 8 | [Outcomes Keyed on a Client-Generated Id, Not a Foreign Key](docs/adr/008-outcomes-keyed-on-a-client-generated-id-not-a-foreign-key.md) | The SDK generates a UUID per call, hands it to the host application through `onTrace`, and stamps it on the trace. Outcomes are stored in their… |
-| 9 | [Corrections](docs/adr/009-corrections.md) | Every claim this project made and did not keep, what was actually true, and the test that now guards it. |
+| 9 | [Corrections](docs/adr/009-corrections.md) | Every claim this project made and did not keep, what was actually true, and the test that now guards it — plus the one still open, because recording it beats letting it stand. |
 | 10 | [No Node Built-Ins in the SDK](docs/adr/010-no-node-built-ins-in-the-sdk.md) | The SDK imports nothing from `node:*`, so it runs on edge runtimes, Deno, Bun and the browser — the environments its own README recommended. |
 | 11 | [The Registry Serves Prompts; the Code Still Owns Them](docs/adr/011-the-registry-serves-prompts-the-code-still-owns-them.md) | A released version overrides the prompt in your code, but never replaces it — the local text stays the contract and the fallback, so a backend outage cannot change application behaviour. |
 | 12 | [One Instrumentation, Two OpenAI APIs](docs/adr/012-one-instrumentation-two-openai-apis.md) | Chat Completions and the Responses API share every behaviour that matters; only their four genuine differences live in an adapter, and unverified shapes degrade rather than break. |
-| 13 | [Attribution Is Not Authentication](docs/adr/013-attribution-is-not-authentication.md) | Releases record a self-declared name, never a verified one — and ADR-4's threat model, written when the dashboard was read-only, is restated now that it can change production. |
+| 13 | [Attribution Is Not Authentication](docs/adr/013-attribution-is-not-authentication.md) | Releases record a self-declared name, never a verified one — and ADR-4's threat model, written when the dashboard was read-only, is restated now that a key holder can have arbitrary text served as a production system prompt. |
 | 14 | [Detecting a Bad Release, and When a Machine May Undo It](docs/adr/014-detecting-a-bad-release-and-when-a-machine-may-undo-it.md) | Every live release is compared against the version it replaced; reverting unattended is opt-in, needs more evidence than reporting does, and never happens on latency alone. |
 
-**[ADR-9](docs/adr/009-corrections.md) is the one to read first** if you are evaluating this repo: it lists every claim the project made and did not keep, what was actually true, and the test that now guards it.
+**[ADR-9](docs/adr/009-corrections.md) is the one to read first** if you are evaluating this repo: it lists every claim the project made and did not keep, what was actually true, and the test that now guards it — including one entry that is still open, kept there rather than deleted because its fix is a feature and the claim was false in the meantime.

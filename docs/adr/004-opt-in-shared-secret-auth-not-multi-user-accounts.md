@@ -16,8 +16,10 @@
 could only be read. [ADR-11](011-the-registry-serves-prompts-the-code-still-owns-them.md)
 made it able to change which prompt a running production application sends, which is a
 materially different thing to protect with a single shared secret.
-[ADR-13](013-attribution-is-not-authentication.md) states what that now means, what bounds
-the damage, and the point at which a real identity provider stops being optional.
+[ADR-13](013-attribution-is-not-authentication.md) states what that now means, how little
+bounds the damage — a key holder can have arbitrary text served as a production system
+prompt, and the local prompt is not the safeguard against it that this project once claimed
+— and the point at which a real identity provider stops being optional.
 
 **When to revisit:** If PromptWatch ever needs multi-tenant deployments (separate teams on the same backend, per-user audit logs, SSO/SAML/OIDC integration), the shared-secret model will need to be replaced with a proper identity provider. That is explicitly out of scope today — the architecture document marks this as a future decision point.
 

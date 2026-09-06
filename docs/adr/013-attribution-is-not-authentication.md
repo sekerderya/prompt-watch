@@ -37,22 +37,51 @@ UI, at the point where it is asked for, and here.
 ADR-4 stated the threat model as "protect the dashboard and API from casual access on a
 shared network". That was written when the dashboard could only be *read*. It now includes:
 
-- anyone holding the shared key can change what production prompts an application sends;
+- anyone holding the shared key can put arbitrary text into `prompts` and have it served.
+  `POST /api/prompts/resolve` accepts any name and any body, and does not check the supplied
+  hash against that body; `POST /api/ab-tests` will then make two such rows the variants of
+  a live test, or `POST /api/releases` will promote one outright;
 - the change takes effect within one poll interval, with no deploy and no review;
+- the A/B path is not opt-in. `useRegistry` gates the registry, but nothing gates variant
+  assignment, so this reaches every installation rather than only the ones that asked to be
+  served remote prompts;
 - the record of who did it is self-declared and therefore unreliable.
 
-Two things bound the damage. The prompt in the application's own code remains the fallback
-(ADR-11), so the worst case is the wrong *valid* prompt rather than no prompt or arbitrary
-injected text. And releases are append-only, so a bad change is visible and reversible
-rather than silent.
+One thing bounds the damage, and only partly. Releases are append-only, so a bad *release* is
+visible in the history and revertible in one click. An A/B test is not a release: it never
+enters that history, it carries no `actor` column at all, and it is only visible while it is
+still running. The path that needs no opt-in from the application is therefore also the path
+with the weakest record of having happened.
 
-Neither of those makes the shared secret adequate for a team that needs review or per-person
-accountability on production changes. It is adequate for the deployment this tool targets,
-and that boundary is now stated rather than implied.
+**The local prompt does not bound it, and an earlier version of this ADR wrongly said it
+did.** The claim was that because the prompt in the application's own code remains the
+fallback (ADR-11), the worst case is the wrong *valid* prompt rather than arbitrary injected
+text. That is false. The fallback fires when the backend has nothing to say — it is a
+liveness guarantee, not an integrity one — and here the backend is answering confidently
+with exactly what it was told. Recorded in [ADR-9](009-corrections.md).
+
+There is no server-side repair. With one shared secret the attacker and the application
+present the same credential, so the backend cannot answer "did this text come from a real
+client": a forged trace says yes just as convincingly as a real one. Any defence that
+actually holds has to run where the key does not reach, which means inside the caller's own
+process — see *when to revisit*.
+
+None of this makes the shared secret adequate for a team that needs review or per-person
+accountability on production changes. It is adequate for the deployment this tool targets —
+one operator, one key, a trusted network — and that boundary is now stated rather than
+implied.
 
 ## When to revisit
 
-The moment more than one person can promote. At that point the honest answer is an identity
+Before any of what follows: a caller-declared allowlist of prompt hashes. The application
+passes the hashes it is willing to serve, the SDK checks anything the backend hands back
+against that list, and falls back to the prompt in the caller's own code when it does not
+match. It is the smaller of the two changes described here and it removes the worst outcome
+without introducing an identity system at all, because the check runs in the caller's
+process rather than behind the shared key. It is a feature, not a wording change, which is
+why this ADR records the gap instead of quietly closing it.
+
+The full answer arrives the moment more than one person can promote. At that point the honest answer is an identity
 provider (OIDC), releases carrying a verified subject rather than a typed string, and
 probably an approval step between "promote" and "served" — all three together, since any one
 of them alone provides a sense of accountability without the substance.
