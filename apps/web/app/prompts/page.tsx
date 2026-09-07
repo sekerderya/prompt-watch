@@ -16,6 +16,8 @@ interface PromptSummary {
   total: number;
   errors: number;
   totalCost: number;
+  /** Calls whose model was missing from the pricing table, so the cost is a guess. */
+  unpriced: number;
   avgLatency: number | null;
   avgScore: number | null;
   scored: number;
@@ -286,7 +288,16 @@ export default function PromptsPage() {
                     {p.total > 0 ? `${((p.errors / p.total) * 100).toFixed(1)}%` : "—"}
                   </td>
                   <td className="pw-num">{fmt(p.avgLatency, 0, " ms")}</td>
-                  <td className="pw-num">${p.totalCost.toFixed(4)}</td>
+                  <td
+                    className="pw-num"
+                    title={
+                      p.unpriced > 0
+                        ? `${p.unpriced} call(s) used a model missing from the pricing table, so this total is an estimate.`
+                        : undefined
+                    }
+                  >
+                    {p.unpriced > 0 ? "~" : ""}${p.totalCost.toFixed(4)}
+                  </td>
                   <td className="pw-num">
                     {p.scored > 0 ? `${percent(p.avgScore)} (n=${p.scored})` : "—"}
                   </td>

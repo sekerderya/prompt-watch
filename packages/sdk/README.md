@@ -55,8 +55,10 @@ verified against a live API.
 | Token counts, cost, latency, success/failure | The model's `role: "assistant"` output |
 | A coarse error category (e.g. `RATE_LIMIT`) | Error messages, which could quote user input |
 
-The error category is derived from the HTTP status and the error's class name only. No
-message text is read, so nothing a user typed can reach telemetry through an error string.
+The error category is derived from four fields and no others: the HTTP status, the error's
+class name, and the two enumerated identifiers providers use — `code` (`ECONNREFUSED`,
+`ETIMEDOUT`) and `type` (`content_filter`). Every one of them is drawn from a fixed set. The
+`message` is never read, so nothing a user typed can reach telemetry through an error string.
 
 ## Runtime support
 

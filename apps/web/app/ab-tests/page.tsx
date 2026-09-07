@@ -544,8 +544,8 @@ export default function ABTestsPage() {
                         <MetricRow
                           label="Avg. Cost"
                           verdict={costVerdict(metricsA, metricsB)}
-                          valueA={`$${fmt(metricsA?.avgCost, 6)}`}
-                          valueB={`$${fmt(metricsB?.avgCost, 6)}`}
+                          valueA={`${metricsA?.unpriced ? "~" : ""}$${fmt(metricsA?.avgCost, 6)}`}
+                          valueB={`${metricsB?.unpriced ? "~" : ""}$${fmt(metricsB?.avgCost, 6)}`}
                         />
                         <MetricRow
                           label="Error Rate"

@@ -78,6 +78,33 @@ describe("GET /api/prompts/overview", () => {
     expect(support.avgScore).toBe(1);
   });
 
+  // ADR-7 promises that every aggregate containing a guessed price says so.
+  // This column did not: it summed cost_usd and never counted pricing_unknown,
+  // so the list showed a precise figure while the panel below it, for the same
+  // prompt, showed the same figure marked as an estimate.
+  it("counts the calls whose price was guessed, so the cost is not shown as exact", async () => {
+    const priced = await createPrompt("priced", 1);
+    const guessed = await createPrompt("guessed", 1);
+
+    await postTraces(
+      traceRequest([
+        trace(priced.id, { costUsd: 0.001 }),
+        trace(guessed.id, { costUsd: 0.002 }),
+        trace(guessed.id, { costUsd: 0.003, pricingUnknown: true }),
+      ])
+    );
+
+    const rows = await (
+      await overview(new NextRequest("http://localhost:3000/api/prompts/overview"))
+    ).json();
+
+    const find = (name: string) => rows.find((r: { name: string }) => r.name === name);
+    expect(find("priced").unpriced).toBe(0);
+    expect(find("guessed").unpriced).toBe(1);
+    // The total still includes the guessed call; the flag is what marks it.
+    expect(find("guessed").totalCost).toBeCloseTo(0.005, 6);
+  });
+
   it("includes a prompt that has never been called", async () => {
     await createPrompt("unused", 1);
 

@@ -4,9 +4,15 @@
  * "Error rate: 5%" is close to useless on its own — a rate-limit problem, an
  * expired key and an upstream outage all need different responses, and the
  * dashboard could not tell them apart. These categories are deliberately
- * coarse and derived only from the HTTP status and the error's own class name:
- * no message text is read, so nothing a user typed can leak into telemetry
- * through an error string (ADR-2).
+ * coarse, and derived from exactly four fields: the HTTP status, the error's
+ * own class name, and the enumerated `code` and `type` identifiers providers
+ * set. All four take values from a fixed set; `message` is never read, so
+ * nothing a user typed can leak into telemetry through an error string (ADR-2).
+ *
+ * Listing the fields exhaustively is the point. An earlier version of this
+ * comment said "status and class name only" while the code also read `code` and
+ * `type` — harmless in substance, but a privacy claim that understates what it
+ * touches is the wrong kind of wrong.
  */
 export type TraceErrorType =
   | "RATE_LIMIT"

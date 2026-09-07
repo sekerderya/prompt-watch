@@ -9,6 +9,7 @@ interface OverviewRow {
   total: number;
   errors: number;
   total_cost: number | null;
+  unpriced: number;
   avg_latency: number | null;
   avg_score: number | null;
   scored: number;
@@ -42,6 +43,10 @@ export async function GET(request: NextRequest) {
              COUNT(t.id)                                AS total,
              COUNT(t.id) FILTER (WHERE t.status = 'ERROR') AS errors,
              SUM(t.cost_usd)                            AS total_cost,
+             -- Without this the column is a precise-looking dollar figure that
+             -- silently includes guessed prices, which is the exact failure
+             -- ADR-7 exists to prevent.
+             COUNT(t.id) FILTER (WHERE t.pricing_unknown) AS unpriced,
              AVG(t.latency_ms)                          AS avg_latency,
              AVG(o.score)                               AS avg_score,
              COUNT(o.id)                                AS scored
@@ -65,6 +70,7 @@ export async function GET(request: NextRequest) {
         total: Number(r.total),
         errors: Number(r.errors),
         totalCost: Number(r.total_cost ?? 0),
+        unpriced: Number(r.unpriced),
         avgLatency: nullable(r.avg_latency),
         avgScore: nullable(r.avg_score),
         scored: Number(r.scored),
