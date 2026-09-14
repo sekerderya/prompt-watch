@@ -6,6 +6,8 @@ import { listTraces } from "@/lib/traceList";
 /** Guards against a single request trying to insert an unbounded number of rows. */
 const MAX_BATCH_SIZE = 500;
 const MAX_TRACE_ID_LENGTH = 128;
+/** Keeps the model column an identifier rather than somewhere to put a payload. */
+const MAX_MODEL_LENGTH = 128;
 
 interface ParsedTrace {
   promptId: number;
@@ -16,6 +18,7 @@ interface ParsedTrace {
   completionTokens: number;
   costUsd: number;
   pricingUnknown: boolean;
+  model: string | null;
   status: TraceStatus;
   errorType: TraceErrorType | null;
   clientTraceId: string | null;
@@ -59,6 +62,16 @@ function parseTrace(raw: unknown): ParsedTrace | string {
     }
   }
 
+  // Coerced rather than rejected, for the same reason as errorType above: a
+  // malformed model name is not worth discarding a batch of otherwise good
+  // telemetry over. A dropped name costs this call its place in a model
+  // comparison; a rejected batch costs 500 calls everything.
+  const rawModel = body.model;
+  const model =
+    typeof rawModel === "string" && rawModel !== "" && rawModel.length <= MAX_MODEL_LENGTH
+      ? rawModel
+      : null;
+
   // The SDK reports these in its own vocabulary; map rather than couple the
   // wire format to the database enum.
   const SOURCES: Record<string, PromptSource> = {
@@ -90,6 +103,7 @@ function parseTrace(raw: unknown): ParsedTrace | string {
     completionTokens: Math.round(nonNegative(body.completionTokens)),
     costUsd: nonNegative(body.costUsd),
     pricingUnknown: body.pricingUnknown === true,
+    model,
     status: status as TraceStatus,
     errorType,
     // Joins this trace to an outcome the host application reports separately.

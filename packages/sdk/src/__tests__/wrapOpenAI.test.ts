@@ -23,6 +23,7 @@ interface TraceBody {
   completionTokens: number;
   costUsd: number;
   pricingUnknown?: boolean;
+  model?: string;
   status: string;
 }
 
@@ -400,6 +401,24 @@ describe("wrapOpenAI", () => {
       // 120/1000 * 0.00015 + 340/1000 * 0.0006
       expect(traceBody?.costUsd).toBeCloseTo(0.000222, 9);
       expect(traceBody?.pricingUnknown).toBe(false);
+    });
+
+    it("records the requested model alias, not the dated snapshot echoed back", async () => {
+      // The alias is what a migration decision is about — "should we move from
+      // gpt-4o to gpt-4o-mini" is a question about aliases — and recording the
+      // snapshot instead would split one model across a new id every time the
+      // provider dates a release.
+      mockOpenAICompletions("gpt-4o-mini-2024-07-18");
+      mockResolve();
+      mockTrace();
+
+      await makeClient().chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "system", content: SYSTEM_TEXT }],
+      });
+
+      await waitFor(() => !!traceScope.isDone());
+      expect(traceBody?.model).toBe("gpt-4o-mini");
     });
 
     it("flags the trace when the model is not in the pricing table", async () => {

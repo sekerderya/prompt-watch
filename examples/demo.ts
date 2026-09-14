@@ -62,6 +62,40 @@ interface VariantRow {
   scored: number;
 }
 
+interface ModelRow {
+  model: string;
+  total: number;
+  avgLatency: number | null;
+  avgCost: number | null;
+  avgScore: number | null;
+  scored: number;
+}
+
+type ModelVerdict =
+  | { kind: "insufficient-data"; needed: number; haveA: number; haveB: number }
+  | { kind: "inconclusive"; pValue: number }
+  | { kind: "winner"; winner: "A" | "B"; pValue: number }
+  | { kind: "estimated"; unpricedA: number; unpricedB: number };
+
+interface ModelMetricRow {
+  metric: string;
+  verdict: ModelVerdict;
+}
+
+/** The console equivalent of the verdict column on the Prompts page. */
+function verdictLine(v: ModelVerdict, a: string, b: string): string {
+  switch (v.kind) {
+    case "insufficient-data":
+      return `not enough data (${v.needed} needed per model, have ${v.haveA} and ${v.haveB})`;
+    case "inconclusive":
+      return `no significant difference (p = ${v.pValue.toFixed(3)})`;
+    case "winner":
+      return `${v.winner === "A" ? a : b} is better (p = ${v.pValue.toFixed(3)})`;
+    case "estimated":
+      return "one or both models priced by estimate — not compared";
+  }
+}
+
 function authHeaders(): Record<string, string> {
   return {
     "Content-Type": "application/json",
@@ -599,7 +633,90 @@ async function main(): Promise<void> {
   }
 
   line();
-  console.log("9️⃣  STOPPING THE TEST");
+  console.log("9️⃣  COMPARING TWO MODELS ON THE SAME PROMPT");
+  line();
+  console.log("→ Every trace records the model it asked for, so the statistics that compare");
+  console.log("  two prompts compare two models unchanged. A separate prompt is used here:");
+  console.log("  splitting the A/B traffic above across two models would confound it —");
+  console.log("  a difference could then be the prompt or the model, and nothing could say.\n");
+
+  const MODEL_PROMPT = "release-note-writer";
+  const MODEL_PROMPT_TEXT = "Summarise the change below as a one-line release note.";
+  // The expensive model is very slightly better here and ~16x the price. Whether
+  // that gap is real at this sample size is exactly what the gate decides.
+  const MODEL_QUALITY: Record<string, number> = { "gpt-4o-mini": 0.86, "gpt-4o": 0.88 };
+  const PER_MODEL = 40;
+
+  let modelTraceId: string | undefined;
+  const modelClient = wrapOpenAI(useReal ? new OpenAI() : createMockClient(), {
+    promptName: MODEL_PROMPT,
+    backendUrl: BACKEND_URL,
+    // Shares the demo's cache and telemetry so this section adds no extra
+    // pollers to stop and no traces that outlive the final flush.
+    cache: demoCache,
+    telemetry,
+    apiKey: SDK_API_KEY,
+    onTrace: (handle) => {
+      modelTraceId = handle.traceId;
+    },
+  });
+
+  let modelOutcomes = 0;
+  for (const model of Object.keys(MODEL_QUALITY)) {
+    for (let start = 0; start < PER_MODEL; start += CONCURRENCY) {
+      const batch = [];
+      for (let i = start; i < Math.min(start + CONCURRENCY, PER_MODEL); i++) {
+        modelTraceId = undefined;
+        const done = modelClient.chat.completions.create({
+          model,
+          messages: [
+            { role: "system", content: MODEL_PROMPT_TEXT },
+            { role: "user", content: USER_QUESTION },
+          ],
+        });
+        // Read synchronously: onTrace has already fired by the time create()
+        // returns its promise, and the next iteration overwrites the capture.
+        batch.push({ traceId: modelTraceId!, done });
+      }
+      await Promise.all(batch.map((b) => b.done));
+
+      const scored = batch.map((b) => ({
+        traceId: b.traceId,
+        score: Math.random() < MODEL_QUALITY[model] ? 1 : 0,
+        label: "useful",
+      }));
+      if (await outcomes.recordMany(scored)) modelOutcomes += scored.length;
+    }
+    console.log(`   ${model.padEnd(12)} → ${PER_MODEL} calls`);
+  }
+
+  await telemetry.flush();
+
+  const models = await fetch(
+    `${BACKEND_URL}/api/metrics/model-comparison?promptName=${MODEL_PROMPT}`,
+    { headers: authHeaders() }
+  ).then((r) => r.json());
+
+  console.log("");
+  for (const row of models.models as ModelRow[]) {
+    console.log(
+      `   ${row.model.padEnd(12)} ${String(row.total).padStart(4)} calls · ` +
+        `${Math.round(row.avgLatency ?? 0)}ms · $${(row.avgCost ?? 0).toFixed(6)}/call · ` +
+        `quality ${row.scored ? `${((row.avgScore ?? 0) * 100).toFixed(1)}%` : "n/a"}`
+    );
+  }
+  console.log(`\n   ${models.a} vs ${models.b}`);
+  for (const m of models.metrics as ModelMetricRow[]) {
+    console.log(`   ${m.metric.padEnd(10)} → ${verdictLine(m.verdict, models.a, models.b)}`);
+  }
+  console.log(
+    "\n   → Nothing randomised which call went to which model, so this is grounds" +
+      "\n     for a controlled experiment rather than a result. The Prompts page says" +
+      "\n     so above the table (ADR-15).\n"
+  );
+
+  line();
+  console.log("🔟  STOPPING THE TEST");
   line();
   // Leaving the test ACTIVE would make a second `npm run demo` collide with it:
   // the backend now rejects a second active test for the same prompt.
@@ -620,11 +737,12 @@ async function main(): Promise<void> {
   demoCache.stop();
 
   // versioning (2) + bucketing (6) + simulated traffic + streaming (1)
-  const traceCount = 2 + SIMULATED_USERS.length + TRAFFIC + 3;
+  // + the two-model section (PER_MODEL per model)
+  const traceCount = 2 + SIMULATED_USERS.length + TRAFFIC + 3 + PER_MODEL * 2;
   line();
   console.log(
-    `✅ DEMO COMPLETE — ${traceCount} traces, ${recorded} outcomes, ` +
-      `2 prompt versions, 1 completed A/B test`
+    `✅ DEMO COMPLETE — ${traceCount} traces, ${recorded + modelOutcomes} outcomes, ` +
+      `2 prompts, 1 completed A/B test, 1 model comparison`
   );
   console.log(`👉 Dashboard: ${BACKEND_URL}`);
   line();

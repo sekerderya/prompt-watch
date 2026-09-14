@@ -11,6 +11,15 @@ export interface TracePayload {
   costUsd: number;
   /** True when costUsd is a fallback guess because the model was not in the pricing table. */
   pricingUnknown?: boolean;
+  /**
+   * The model the caller asked for, not the dated snapshot id echoed back.
+   *
+   * The requested alias is the thing a comparison is about — "should we move
+   * from gpt-4o to gpt-4o-mini" is a question about aliases, and it is also what
+   * pricing resolves against (ADR-7). Optional: SDK versions before model
+   * comparison existed do not send one.
+   */
+  model?: string;
   status: "SUCCESS" | "ERROR";
   /** Coarse failure category; only meaningful when status is ERROR. */
   errorType?: TraceErrorType;

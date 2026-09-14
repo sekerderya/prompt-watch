@@ -449,6 +449,17 @@ a {
   font-weight: 600;
 }
 
+/* Two panels mark a better/worse value outside the A/B comparison table:
+   ReleaseHealth and the model comparison. Scoping these to .pw-compare meant
+   the class they already set matched nothing and the colour never appeared. */
+.pw-value--winner {
+  color: var(--pw-success);
+}
+
+.pw-value--loser {
+  color: var(--pw-text-muted);
+}
+
 .pw-compare .pw-value--winner {
   color: var(--pw-success);
 }

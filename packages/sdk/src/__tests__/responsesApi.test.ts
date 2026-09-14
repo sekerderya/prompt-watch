@@ -428,6 +428,9 @@ describe("wrapOpenAI — Responses streaming", () => {
     expect(trace.promptTokens).toBe(11);
     expect(trace.completionTokens).toBe(22);
     expect(trace.status).toBe("SUCCESS");
+    // The streaming path builds its trace separately from the buffered one, so
+    // the model has to be asserted on both or it can regress on one.
+    expect(trace.model).toBe("gpt-4o-mini");
   });
 
   it("still records a trace when the consumer stops early", async () => {

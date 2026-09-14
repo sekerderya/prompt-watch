@@ -20,9 +20,13 @@ interface TraceRow {
   completion_tokens: number;
   cost_usd: number;
   pricing_unknown: boolean;
+  model: string | null;
   score: number | null;
   label: string | null;
 }
+
+/** Matches the backend's own cap, so a filter can never be longer than a stored value. */
+const MAX_MODEL_LENGTH = 128;
 
 function parseLimit(raw: string | null): number {
   const parsed = Number(raw);
@@ -61,6 +65,11 @@ export async function listTraces(params: URLSearchParams) {
   const releaseId = parseId(params.get("releaseId"));
   const status = params.get("status");
   const source = params.get("source");
+  const model = params.get("model");
+
+  if (model !== null && (model === "" || model.length > MAX_MODEL_LENGTH)) {
+    throw new RangeError(`model must be 1-${MAX_MODEL_LENGTH} characters`);
+  }
 
   if (status !== null && status !== "ERROR" && status !== "SUCCESS") {
     throw new RangeError("status must be SUCCESS or ERROR");
@@ -95,6 +104,7 @@ export async function listTraces(params: URLSearchParams) {
   if (source !== null) {
     filters.push(Prisma.sql`t.prompt_source::text = ${source}`);
   }
+  if (model !== null) filters.push(Prisma.sql`t.model = ${model}`);
 
   const where =
     filters.length > 0 ? Prisma.sql`WHERE ${Prisma.join(filters, " AND ")}` : Prisma.empty;
@@ -105,7 +115,7 @@ export async function listTraces(params: URLSearchParams) {
            t.prompt_source::text AS prompt_source, t.release_id,
            t.status::text AS status, t.error_type::text AS error_type,
            t.latency_ms, t.prompt_tokens, t.completion_tokens,
-           t.cost_usd, t.pricing_unknown,
+           t.cost_usd, t.pricing_unknown, t.model,
            o.score, o.label
     FROM traces t
     JOIN prompts p ON p.id = t.prompt_id
@@ -135,6 +145,7 @@ export async function listTraces(params: URLSearchParams) {
       completionTokens: Number(r.completion_tokens),
       costUsd: Number(r.cost_usd),
       pricingUnknown: r.pricing_unknown,
+      model: r.model,
       score: r.score === null ? null : Number(r.score),
       label: r.label,
     })),

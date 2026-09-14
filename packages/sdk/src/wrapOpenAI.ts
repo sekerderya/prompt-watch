@@ -345,6 +345,11 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
         }
       }
 
+      // The model we asked for, not the one echoed back: the API returns a dated
+      // snapshot id ("gpt-4o-mini-2024-07-18") that no pricing alias matches.
+      // Declared before the emitters because both close over it.
+      const requestedModel: string | undefined = requestBody?.model;
+
       /**
        * Hands a finished measurement to the telemetry client.
        *
@@ -358,7 +363,12 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
         // Recorded on every trace so the backend can answer "did this release
         // reach any client", which is otherwise unanswerable: the host
         // application is the only thing that knows, and it is not asked twice.
-        const provenance = { promptSource, releaseId: published?.releaseId, clientTraceId };
+        const provenance = {
+          promptSource,
+          releaseId: published?.releaseId,
+          clientTraceId,
+          model: requestedModel,
+        };
 
         if (traceMeta) {
           telemetry.send({
@@ -387,10 +397,6 @@ export function wrapOpenAI(client: OpenAI, options: WrapOpenAIOptions): OpenAI {
           status: "ERROR",
           errorType: classifyError(err),
         });
-
-      // The model we asked for, not the one echoed back: the API returns a dated
-      // snapshot id ("gpt-4o-mini-2024-07-18") that no pricing alias matches.
-      const requestedModel: string | undefined = requestBody?.model;
 
       if (adapter.isStreaming(requestBody)) {
         const { body: finalBody, streamOptions } = adapter.prepareStream(requestBody);

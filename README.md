@@ -307,6 +307,41 @@ detection and action are separate decisions, and states plainly what this cannot
 comparison is observational, so it is a regression alarm rather than proof the new prompt
 caused the drop.
 
+## Comparing models
+
+Every trace records the model alias the caller asked for, so the Prompts page can answer the
+question that follows every price change and deprecation notice: *could this prompt run on
+the cheaper model?*
+
+The comparison is the A/B machinery pointed at a third axis — Welch's t-test on quality,
+latency and cost, a two-proportion z-test on error rate, the same 30-per-side gate. No new
+statistics were written for it.
+
+```
+Models                                        2 in the last 30 days
+
+  gpt-4o-mini   3,204 calls   0.4% errors   310 ms   $0.000180   91.2% (n=612)
+  gpt-4o          987 calls   0.5% errors   690 ms   $0.002950   92.0% (n=190)
+
+  gpt-4o-mini vs gpt-4o
+  Avg. latency   310 ms      690 ms      gpt-4o-mini is better (p = 0.000)
+  Avg. cost      $0.000180   $0.002950   gpt-4o-mini is better (p = 0.000)
+  Quality score  91.2%       92.0%       No significant difference (p = 0.412)
+```
+
+**Nothing randomised which call went to which model**, and the panel says so above the
+table. The two populations are whatever traffic each model happened to receive, so a
+difference here is grounds for a controlled experiment, not a conclusion — the same honesty
+ADR-14 applies to release regressions. Cost gets no verdict at all when either model is
+priced by the fallback rate, because two guesses compared against each other would produce a
+confident result about arithmetic rather than about money
+([ADR-7](docs/adr/007-a-guessed-cost-is-labelled-as-a-guess.md)).
+
+Traces from SDK builds that predate model recording are left out rather than bucketed as
+"unknown" — they genuinely do not know which model served them.
+[ADR-15](docs/adr/015-model-comparison-is-observational.md) covers the rest, including why
+the randomised version is a feature rather than a column.
+
 ## Deploying
 
 The Quickstart stack runs `next dev` behind a bind mount, which is right for local work and wrong for anything else. For a real deployment there is a separate multi-stage image that builds a production bundle and runs it as a non-root user:
@@ -473,5 +508,6 @@ wrong. Each is a standalone document under [`docs/adr/`](docs/adr).
 | 12 | [One Instrumentation, Two OpenAI APIs](docs/adr/012-one-instrumentation-two-openai-apis.md) | Chat Completions and the Responses API share every behaviour that matters; only their four genuine differences live in an adapter, and unverified shapes degrade rather than break. |
 | 13 | [Attribution Is Not Authentication](docs/adr/013-attribution-is-not-authentication.md) | Releases record a self-declared name, never a verified one — and ADR-4's threat model, written when the dashboard was read-only, is restated now that a key holder can have arbitrary text served as a production system prompt. |
 | 14 | [Detecting a Bad Release, and When a Machine May Undo It](docs/adr/014-detecting-a-bad-release-and-when-a-machine-may-undo-it.md) | Every live release is compared against the version it replaced; reverting unattended is opt-in, needs more evidence than reporting does, and never happens on latency alone. |
+| 15 | [Model Comparison Is Observational, and Says So](docs/adr/015-model-comparison-is-observational.md) | Traces record which model served them and the same statistics compare models, but nothing randomised the assignment — so the dashboard calls it grounds for an experiment rather than a result. |
 
 **[ADR-9](docs/adr/009-corrections.md) is the one to read first** if you are evaluating this repo: it lists every claim the project made and did not keep, what was actually true, and the test that now guards it — including one entry that is still open, kept there rather than deleted because its fix is a feature and the claim was false in the meantime.

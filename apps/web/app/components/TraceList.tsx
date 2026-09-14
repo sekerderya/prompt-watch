@@ -18,6 +18,7 @@ interface TraceRow {
   completionTokens: number;
   costUsd: number;
   pricingUnknown: boolean;
+  model: string | null;
   score: number | null;
   label: string | null;
 }
@@ -120,6 +121,7 @@ export default function TraceList({ promptName }: { promptName: string }) {
                 <tr>
                   <th>When</th>
                   <th>Version</th>
+                  <th>Model</th>
                   <th>Prompt from</th>
                   <th>Result</th>
                   <th className="pw-num">Latency</th>
@@ -138,6 +140,16 @@ export default function TraceList({ promptName }: { promptName: string }) {
                         <span className={`pw-badge pw-badge--${t.variant.toLowerCase()}`}>
                           {t.variant}
                         </span>
+                      )}
+                    </td>
+                    <td>
+                      {t.model === null ? (
+                        // Traces written before the column existed. Shown as
+                        // absent rather than guessed, which is also why the
+                        // comparison leaves them out.
+                        <span className="pw-subtle">—</span>
+                      ) : (
+                        <span className="pw-chip">{t.model}</span>
                       )}
                     </td>
                     <td>

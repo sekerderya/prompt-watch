@@ -6,6 +6,7 @@ import PromptDiff from "../components/PromptDiff";
 import RangePicker, { DEFAULT_RANGE_DAYS } from "../components/RangePicker";
 import TraceList from "../components/TraceList";
 import ReleaseHealth from "../components/ReleaseHealth";
+import ModelComparison from "../components/ModelComparison";
 import { promptForOperator } from "@/lib/operator";
 
 interface PromptSummary {
@@ -485,6 +486,8 @@ export default function PromptsPage() {
                   <pre className="pw-diff">{versions[0].promptText}</pre>
                 </>
               )}
+
+              <ModelComparison promptName={selected} days={days} />
 
               <TraceList promptName={selected} />
             </>

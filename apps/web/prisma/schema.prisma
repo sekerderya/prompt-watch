@@ -108,6 +108,11 @@ model Trace {
   /// not in the SDK's pricing table. Aggregates must surface this, otherwise a
   /// guessed cost is indistinguishable from a measured one.
   pricingUnknown   Boolean     @default(false) @map("pricing_unknown")
+  /// The model alias the caller requested, e.g. "gpt-4o-mini". Not the dated
+  /// snapshot id the API echoes back: an alias is what a migration decision is
+  /// about, and what pricing resolves against (ADR-7). Nullable because traces
+  /// from SDK versions before model comparison existed do not carry one.
+  model            String?
   status           TraceStatus
   /// Why the call failed. Null for successful calls. "Error rate: 5%" cannot be
   /// acted on without knowing whether it is throttling, an expired key or an

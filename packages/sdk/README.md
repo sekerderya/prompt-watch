@@ -54,6 +54,7 @@ verified against a live API.
 | The `role: "system"` prompt text and its SHA-256 | `role: "user"` content |
 | Token counts, cost, latency, success/failure | The model's `role: "assistant"` output |
 | A coarse error category (e.g. `RATE_LIMIT`) | Error messages, which could quote user input |
+| The requested model alias (e.g. `gpt-4o-mini`) | Anything else from the request body |
 
 The error category is derived from four fields and no others: the HTTP status, the error's
 class name, and the two enumerated identifiers providers use — `code` (`ECONNREFUSED`,
@@ -243,6 +244,12 @@ wrapOpenAI(openai, {
   },
 });
 ```
+
+The alias you requested is also recorded on the trace, which is what lets the dashboard
+compare the models serving one prompt. It is the alias and not the dated id the API echoes
+back — a migration decision is about `gpt-4o-mini`, not about one of its snapshots, and
+recording the snapshot would split a single model into a new identity on every provider
+release.
 
 ## Failure behaviour
 
